@@ -1,0 +1,34 @@
+{
+  "name": "codemind1",
+  "version": "1.0.0",
+  "description": "AI-Powered VS Code-like IDE with GitHub integration",
+  "scripts": {
+    "client": "cd client && npm run dev",
+    "server": "cd server && npm start",
+    "install-all": "cd client && npm install && cd ../server && npm install",
+    "dev": "echo Run 'npm run server' in one terminal and 'npm run client' in another"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/codemind1"
+  },
+  "keywords": [
+    "ide",
+    "ai",
+    "vscode",
+    "code-editor",
+    "github"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "framer-motion": "^12.23.24",
+    "lucide-react": "^0.552.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2"
+  }
+}
