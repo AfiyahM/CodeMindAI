@@ -903,6 +903,239 @@ router.post('/chat', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/ai/generate-diagram
+ * Expects: { codeContent: string, diagramType: 'flowchart' | 'mindmap' }
+ * Returns: { success: boolean, mermaidCode: string, error?: string }
+ *
+ * Generates a Mermaid diagram (flowchart or mindmap) from code content using AI.
+ */
+router.post('/generate-diagram', async (req, res) => {
+  const { codeContent, diagramType } = req.body;
+
+  if (!codeContent || typeof codeContent !== 'string') {
+    return res.status(400).json({ 
+      success: false,
+      error: 'No code content provided' 
+    });
+  }
+
+  if (!diagramType || !['flowchart', 'mindmap'].includes(diagramType)) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Invalid diagramType. Must be "flowchart" or "mindmap"' 
+    });
+  }
+
+  try {
+    console.log(`[generate-diagram] Generating ${diagramType} for code (${codeContent.length} chars)`);
+    console.log(`[generate-diagram] Code preview: ${codeContent.substring(0, 100)}...`);
+
+    // Build prompt based on diagram type
+    let prompt = '';
+    if (diagramType === 'flowchart') {
+      prompt = `Analyze the following code and generate a Mermaid flowchart diagram that visualizes the code structure, control flow, and logic.
+
+Code:
+\`\`\`
+${codeContent}
+\`\`\`
+
+Requirements:
+- Generate ONLY valid Mermaid flowchart syntax
+- Start with "graph TD" (top-down) or "graph LR" (left-right) as appropriate
+- Use clear, descriptive node labels
+- Show function calls, conditionals, loops, and data flow
+- Use proper Mermaid syntax: --> for arrows, [] for rectangles, {} for diamonds (decisions), () for rounded nodes
+- Do NOT include markdown code fences (\`\`\`)
+- Return ONLY the Mermaid code, nothing else
+
+Example format:
+graph TD
+    A[Start] --> B{Check Condition}
+    B -->|Yes| C[Process]
+    B -->|No| D[Skip]
+    C --> E[End]`;
+    } else {
+      // mindmap
+      prompt = `Analyze the following code and generate a Mermaid mindmap that visualizes the code structure, components, and relationships.
+
+Code:
+\`\`\`
+${codeContent}
+\`\`\`
+
+Requirements:
+- Generate ONLY valid Mermaid mindmap syntax
+- Start with "mindmap"
+- Organize the code structure hierarchically
+- Show main components, functions, classes, and their relationships
+- Use clear, concise labels
+- Do NOT include markdown code fences (\`\`\`)
+- Return ONLY the Mermaid code, nothing else
+
+Example format:
+mindmap
+  root((Main Component))
+    Function A
+    Function B
+      Sub-function B1
+      Sub-function B2
+    Data Structures
+      Array
+      Object`;
+    }
+
+    const systemPrompt = 'You are an expert at generating Mermaid diagrams from code. Always return valid Mermaid syntax only, without any markdown formatting or explanations.';
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt }
+    ];
+
+    // Use longer timeout for diagram generation as it can be complex
+    console.log(`[generate-diagram] Calling AI with ${messages.length} messages`);
+    const result = await generateWithFallback(messages, { 
+      timeoutMs: 60000, 
+      num_predict: 800, 
+      temperature: 0.3 
+    });
+    console.log(`[generate-diagram] AI response received. Source: ${result.source}, Model: ${result.model}`);
+
+    // Extract content - use same pattern as other endpoints
+    let rawContent = '';
+    if (result.source === 'local') {
+      rawContent = result.response.response || 
+                   result.response.message?.content || 
+                   result.response.output?.[0]?.content?.[0]?.text || 
+                   '';
+    } else if (result.source === 'groq') {
+      rawContent = result.response.message?.content || 
+                   result.response.raw?.choices?.[0]?.text || 
+                   JSON.stringify(result.response.raw);
+    } else {
+      rawContent = JSON.stringify(result.response);
+    }
+
+    console.log(`[generate-diagram] Raw content length: ${rawContent.length}, source: ${result.source}`);
+
+    // Clean the response: remove markdown code fences if present
+    let mermaidCode = rawContent.trim();
+    
+    // Remove markdown code fences
+    mermaidCode = mermaidCode.replace(/^```(?:mermaid|mer)?\s*\n?/i, '');
+    mermaidCode = mermaidCode.replace(/\n?```\s*$/i, '');
+    mermaidCode = mermaidCode.trim();
+
+    // If content is still empty or too short, try to extract from JSON string
+    if (!mermaidCode || mermaidCode.length < 10) {
+      // Try to extract code blocks from the response if it's wrapped in JSON
+      const codeBlockMatch = rawContent.match(/```(?:mermaid|mer)?\s*([\s\S]*?)```/i);
+      if (codeBlockMatch && codeBlockMatch[1]) {
+        mermaidCode = codeBlockMatch[1].trim();
+      }
+    }
+
+    // Validate that it looks like Mermaid code (be more lenient - at least 5 chars)
+    if (!mermaidCode || mermaidCode.length < 5) {
+      console.error(`[generate-diagram] Generated code too short. Length: ${mermaidCode?.length || 0}, Raw content preview: ${rawContent.substring(0, 300)}`);
+      throw new Error(`Generated diagram code is too short or empty. AI response preview: ${rawContent.substring(0, 500)}`);
+    }
+
+    // Ensure it starts with the correct keyword
+    if (diagramType === 'flowchart') {
+      if (!mermaidCode.match(/^graph\s+(TD|LR|TB|RL)/i)) {
+        // Try to fix: if it doesn't start with graph, prepend it
+        if (!mermaidCode.toLowerCase().includes('graph')) {
+          // Create a simple flowchart structure from the content
+          const firstLine = mermaidCode.split('\n').find(l => l.trim()) || 'Process';
+          const cleanFirst = firstLine.trim().replace(/[^a-zA-Z0-9\s]/g, '').substring(0, 20) || 'Process';
+          mermaidCode = `graph TD\n    Start[Start] --> ${cleanFirst}[${cleanFirst}]\n    ${cleanFirst} --> End[End]`;
+        } else {
+          // Has graph but wrong format, try to fix
+          const lines = mermaidCode.split('\n');
+          const graphLine = lines.find(l => l.toLowerCase().includes('graph'));
+          if (graphLine) {
+            mermaidCode = mermaidCode.replace(/^.*?graph[^\n]*/i, 'graph TD');
+          } else {
+            mermaidCode = `graph TD\n${mermaidCode}`;
+          }
+        }
+      }
+    } else if (diagramType === 'mindmap') {
+      if (!mermaidCode.match(/^mindmap/i)) {
+        if (!mermaidCode.toLowerCase().includes('mindmap')) {
+          // Create a simple mindmap structure from content
+          const lines = mermaidCode.split('\n').filter(l => l.trim() && !l.match(/^(```|graph|flowchart)/i)).slice(0, 8);
+          if (lines.length > 0) {
+            mermaidCode = `mindmap\n  root((Code Structure))\n${lines.map(l => `    ${l.trim().substring(0, 30)}`).join('\n')}`;
+          } else {
+            mermaidCode = `mindmap\n  root((Code Structure))\n    Functions\n    Variables\n    Logic`;
+          }
+        } else {
+          mermaidCode = mermaidCode.replace(/^.*?mindmap/i, 'mindmap');
+        }
+      }
+    }
+
+    console.log(`[generate-diagram] Success. Generated ${mermaidCode.length} chars of Mermaid code`);
+
+    return res.json({
+      success: true,
+      mermaidCode,
+      usedModel: result.model,
+      source: result.source
+    });
+
+  } catch (error) {
+    console.error('[generate-diagram] Error:', error);
+    console.error('[generate-diagram] Error stack:', error.stack);
+    
+    // Provide a fallback simple diagram if AI fails
+    let fallbackDiagram = '';
+    if (diagramType === 'flowchart') {
+      fallbackDiagram = `graph TD
+    A[Code Start] --> B[Process Code]
+    B --> C[Execute Logic]
+    C --> D[Return Result]
+    D --> E[End]`;
+    } else {
+      fallbackDiagram = `mindmap
+  root((Code Structure))
+    Functions
+    Variables
+    Logic
+    Output`;
+    }
+
+    // If it's a configuration error (no models available), return error
+    // Otherwise, return fallback diagram
+    if (error.message && (
+      error.message.includes('No Groq API key') || 
+      error.message.includes('Ollama') ||
+      error.message.includes('timed out') ||
+      error.message.includes('connection')
+    )) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to generate diagram',
+        details: error.message,
+        suggestion: 'Please ensure Ollama is running or configure GROQ_API_KEY in your .env file'
+      });
+    }
+
+    // For other errors, try to return fallback
+    console.log('[generate-diagram] Using fallback diagram due to error');
+    return res.json({
+      success: true,
+      mermaidCode: fallbackDiagram,
+      usedModel: 'fallback',
+      source: 'fallback',
+      warning: 'AI generation failed, using fallback diagram'
+    });
+  }
+});
+
 /* ---------------------------
    Utility endpoints (optional)
    - /models -> lists installed models via Ollama
@@ -950,3 +1183,5 @@ router.get('/health', (req, res) => {
    Export router
    ---------------------------*/
 module.exports = router;
+
+
