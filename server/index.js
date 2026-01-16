@@ -58,7 +58,12 @@ app.use((req, res) => {
       'GET /api/github/repo-content',
       'POST /api/github/repo-content',
       'POST /api/ai/complete',
-      'POST /api/ai/analyze-repo'
+      'POST /api/ai/analyze-repo',
+      'POST /api/ai/generate-diagram',
+      'POST /api/ai/explain',
+      'POST /api/ai/chat',
+      'GET /api/ai/models',
+      'GET /api/ai/health'
     ]
   });
 });
