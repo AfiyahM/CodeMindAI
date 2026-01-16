@@ -100,6 +100,52 @@ function extractCodeOnly(aiText) {
 }
 
 /**
+ * Helper: Extract content from model response based on model type and source.
+ * Handles CodeGemma (ollama.generate) and other models (ollama.chat) formats.
+ * @param {Object} result - Result object from generateWithFallback
+ * @param {string} result.source - 'local' or 'groq'
+ * @param {string} result.model - Model name
+ * @param {Object} result.response - Response object from the model
+ * @returns {string} Extracted content text
+ */
+function extractModelContent(result) {
+  if (!result || !result.response) {
+    return '';
+  }
+
+  // CodeGemma models use ollama.generate() which returns result.response.response
+  const isCodeGemma = result.model && (
+    result.model.startsWith('codemindai-gemma') || 
+    result.model.startsWith('codegemma')
+  );
+
+  if (result.source === 'local') {
+    // For CodeGemma models, check response.response first
+    if (isCodeGemma) {
+      return result.response?.response || 
+             result.response?.output || 
+             '';
+    }
+    // For other local models (Qwen, etc.), check message.content
+    return result.response?.message?.content || 
+           result.response?.output?.[0]?.content?.[0]?.text || 
+           result.response?.response || 
+           '';
+  } else if (result.source === 'groq') {
+    // Groq format: message.content or raw.choices[0].message.content
+    return result.response?.message?.content || 
+           result.response?.raw?.choices?.[0]?.message?.content || 
+           result.response?.raw?.choices?.[0]?.text || 
+           '';
+  }
+
+  // Fallback: try to stringify if nothing else works
+  return typeof result.response === 'string' 
+    ? result.response 
+    : JSON.stringify(result.response);
+}
+
+/**
  * Helper: Run a chat completion on local Ollama using provided model and messages.
  * Returns parsed response object or throws.
  */
@@ -118,11 +164,7 @@ async function callLocalOllama(model, messages = [], options = {}) {
       options
     });
 
-    return {
-      message: {
-        content: response.message?.content || ''
-      }
-    };
+    return response;
   }
 
   // ---- Other models (Qwen / Groq) use chat ----
@@ -298,15 +340,8 @@ router.post('/complete', async (req, res) => {
 
   try {
     const result = await generateWithFallback(messages, { timeoutMs: 120000, num_predict: 200, temperature: 0.2 });
-    // Extract content text (different shapes for local/groq)
-    let rawContent = '';
-    if (result.source === 'local') {
-      rawContent = result.response.message?.content || result.response.output?.[0]?.content?.[0]?.text || JSON.stringify(result.response);
-    } else if (result.source === 'groq') {
-      rawContent = result.response.message?.content || result.response.raw?.choices?.[0]?.text || JSON.stringify(result.response.raw);
-    } else {
-      rawContent = JSON.stringify(result.response);
-    }
+    // Extract content using unified helper function
+    const rawContent = extractModelContent(result);
 
     const codeOnly = extractCodeOnly(rawContent);
 
@@ -452,24 +487,21 @@ Be concise but thorough. Use numbered lists and code examples when required.
     ];
 
     // This can be heavy -> allow longer timeout and more tokens
-    const result = await generateWithFallback(messages, { timeoutMs: 220000, num_predict: 1500, temperature: 0.2, max_tokens: 2000 });
+   // const result = await generateWithFallback(messages, { timeoutMs: 220000, num_predict: 1500, temperature: 0.2, max_tokens: 2000 });
 
-    // Get text
-    let rawContent = '';
-  if (result.source === 'local') {
-  rawContent =
-    result.response.response ||               // CodeGemma output
-    result.response.message?.content ||       // Qwen output
-    result.response.output?.[0]?.content?.[0]?.text ||
-    '';
-}
+    // Generate analysis
+    const result = await generateWithFallback(messages, { 
+      timeoutMs: 220000, 
+      num_predict: 1500, 
+      temperature: 0.2,
+      max_tokens: 2000 
+    });
 
-
-    // We want the AI to respond normally (analysis, not code-only)
-    const analysis = typeof rawContent === 'string'
-  ? rawContent.trim()
-  : JSON.stringify(rawContent, null, 2);
-
+    // Extract analysis text using unified helper function
+    const rawContent = extractModelContent(result);
+    console.log('[DEBUG] rawContent:', rawContent.slice(0, 200));
+    
+    const analysis = rawContent.trim() || 'No analysis generated - check model response format';
 
     console.log('[analyze-repo] Analysis complete. Source:', result.source, 'Model:', result.model);
 
@@ -485,6 +517,28 @@ Be concise but thorough. Use numbered lists and code examples when required.
         analyzedAt: new Date().toISOString()
       }
     });
+
+
+    // We want the AI to respond normally (analysis, not code-only)
+  //   //const analysis = typeof rawContent === 'string'
+  // ? rawContent.trim()
+  // : JSON.stringify(rawContent, null, 2);
+
+
+  //   console.log('[analyze-repo] Analysis complete. Source:', result.source, 'Model:', result.model);
+
+  //   return res.json({
+  //     success: true,
+  //     analysis,
+  //     metadata: {
+  //       totalFiles: files.length,
+  //       fileTypes: Object.keys(fileTypes).length,
+  //       dependencies: allDependencies.length,
+  //       usedModel: result.model,
+  //       source: result.source,
+  //       analyzedAt: new Date().toISOString()
+  //     }
+  //   });
 
   } catch (error) {
     console.error('[analyze-repo] Error:', error);
@@ -515,16 +569,10 @@ router.post('/explain', async (req, res) => {
   try {
     const result = await generateWithFallback(messages, { timeoutMs: 40000, num_predict: 400, temperature: 0.3 });
 
-    let rawContent = '';
-    if (result.source === 'local') {
-      rawContent = result.response.message?.content || result.response.output?.[0]?.content?.[0]?.text || JSON.stringify(result.response);
-    } else if (result.source === 'groq') {
-      rawContent = result.response.message?.content || result.response.raw?.choices?.[0]?.text || JSON.stringify(result.response.raw);
-    } else {
-      rawContent = JSON.stringify(result.response);
-    }
-
+    // Extract content using unified helper function
+    const rawContent = extractModelContent(result);
     const explanation = (rawContent && rawContent.trim()) ? rawContent.trim() : 'No explanation available.';
+    
     return res.json({ explanation, usedModel: result.model, source: result.source });
 
   } catch (error) {
@@ -568,23 +616,8 @@ router.post('/chat', async (req, res) => {
 
     const result = await generateWithFallback(messages, { timeoutMs: 30000, num_predict: 600, temperature: 0.6 });
 
-    let rawContent = '';
-    if (result.source === 'local') {
-      rawContent = result.response.message?.content || result.response.output?.[0]?.content?.[0]?.text || JSON.stringify(result.response);
-    } else if (result.source === 'groq') {
-      rawContent = result.response.message?.content || result.response.raw?.choices?.[0]?.text || JSON.stringify(result.response.raw);
-    } else {
-      rawContent = JSON.stringify(result.response);
-    }
-//     if (result.source === 'local') {
-//   rawContent =
-//     result.response.response ||               // CodeGemma output
-//     result.response.message?.content ||       // Qwen output
-//     result.response.output?.[0]?.content?.[0]?.text ||
-//     '';
-// }
-
-
+    // Extract content using unified helper function
+    const rawContent = extractModelContent(result);
     const aiResponse = rawContent && rawContent.trim() ? rawContent.trim() : 'I could not generate a response. Please try again.';
 
     return res.json({ response: aiResponse, usedModel: result.model, source: result.source });
