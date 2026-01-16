@@ -1,0 +1,4 @@
+FROM codegemma:2b
+
+PARAMETER temperature 0.2
+PARAMETER repeat_penalty 1.1

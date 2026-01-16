@@ -21,8 +21,9 @@ const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 //const GROQ_ENDPOINT = 'https://api.groq.com/v1';
 
 // Small utility constants
-const DEFAULT_LOCAL_PRIMARY = 'qwen2.5-coder:3b';
-const DEFAULT_LOCAL_FALLBACK = 'qwen2.5-coder:1.5b';
+// Prefer codemindai-gemma:latest if available locally; fallback to prior gemma name
+const DEFAULT_LOCAL_PRIMARY = 'codemindai-gemma:latest';
+const DEFAULT_LOCAL_FALLBACK = 'codegemma:2b';
 const GROQ_PRIMARY = 'llama-3.1-8b-instant';
 const GROQ_SECONDARY = 'llama-3.1-70b-versatile';
 
@@ -103,21 +104,37 @@ function extractCodeOnly(aiText) {
  * Returns parsed response object or throws.
  */
 async function callLocalOllama(model, messages = [], options = {}) {
-  try {
-    const fullOptions = {
-      model,
-      messages,
-      stream: false,
-      options: options
-    };
 
-    // Some Ollama SDKs accept `options` at top-level; adapt if needed.
-    const resp = await ollama.chat(fullOptions);
-    return resp;
-  } catch (err) {
-    throw err;
+  // ---- CodeGemma requires instruction-style prompt ----
+  if (model.startsWith('codemindai-gemma') || model.startsWith('codegemma')) {
+    const prompt = messages.map(m => m.content).join('\n\n');
+
+    console.log('[CODEGEMMA PROMPT]');
+    console.log(prompt.slice(0, 500));
+
+    const response = await ollama.generate({
+      model,
+      prompt,
+      options
+    });
+
+    return {
+      message: {
+        content: response.message?.content || ''
+      }
+    };
   }
+
+  // ---- Other models (Qwen / Groq) use chat ----
+  return await ollama.chat({
+    model,
+    messages,
+    stream: false,
+    options
+  });
 }
+
+
 
 /**
  * Helper: Call Groq Chat Completion API as fallback.
@@ -166,8 +183,8 @@ async function callGroq(model, messages = [], options = {}) {
 /**
  * Decide which local model to use based on installed models.
  * Priority:
- *  1) qwen2.5-coder:3b
- *  2) qwen2.5-coder:1.5b
+ *  1) codemindai-gemma
+ *  2) codegemma:2b
  *  3) qwen2.5:3b
  *  4) fallback to model param
  */
@@ -175,8 +192,10 @@ async function selectLocalModel(preferred = DEFAULT_LOCAL_PRIMARY) {
   try {
     const listed = (await ollama.list()).models || [];
     const names = listed.map(m => m.name || m);
-    if (names.includes('qwen2.5-coder:3b')) return 'qwen2.5-coder:3b';
-    if (names.includes('qwen2.5-coder:1.5b')) return 'qwen2.5-coder:1.5b';
+    // Prefer 'codemindai-gemma:latest' if present (common naming), then older internal names
+    if (names.includes('codemindai-gemma:latest')) return 'codemindai-gemma:latest';
+    //if (names.includes('codemindai-gemma')) return 'codemindai-gemma';
+    if (names.includes('codegemma:2b')) return 'codegemma:2b';
     if (names.includes('qwen2.5:3b')) return 'qwen2.5:3b';
     // If nothing found, just return preferred (attempt to run may trigger download)
     return preferred;
@@ -437,16 +456,20 @@ Be concise but thorough. Use numbered lists and code examples when required.
 
     // Get text
     let rawContent = '';
-    if (result.source === 'local') {
-      rawContent = result.response.message?.content || result.response.output?.[0]?.content?.[0]?.text || JSON.stringify(result.response);
-    } else if (result.source === 'groq') {
-      rawContent = result.response.message?.content || result.response.raw?.choices?.[0]?.text || JSON.stringify(result.response.raw);
-    } else {
-      rawContent = JSON.stringify(result.response);
-    }
+  if (result.source === 'local') {
+  rawContent =
+    result.response.response ||               // CodeGemma output
+    result.response.message?.content ||       // Qwen output
+    result.response.output?.[0]?.content?.[0]?.text ||
+    '';
+}
+
 
     // We want the AI to respond normally (analysis, not code-only)
-    const analysis = rawContent;
+    const analysis = typeof rawContent === 'string'
+  ? rawContent.trim()
+  : JSON.stringify(rawContent, null, 2);
+
 
     console.log('[analyze-repo] Analysis complete. Source:', result.source, 'Model:', result.model);
 
@@ -553,6 +576,14 @@ router.post('/chat', async (req, res) => {
     } else {
       rawContent = JSON.stringify(result.response);
     }
+//     if (result.source === 'local') {
+//   rawContent =
+//     result.response.response ||               // CodeGemma output
+//     result.response.message?.content ||       // Qwen output
+//     result.response.output?.[0]?.content?.[0]?.text ||
+//     '';
+// }
+
 
     const aiResponse = rawContent && rawContent.trim() ? rawContent.trim() : 'I could not generate a response. Please try again.';
 

@@ -1,10 +1,30 @@
 'use client';
 
 import { Network } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { FileNode } from './ExplorerView';
 
-export default function MindMapView() {
+interface TriggerGeneration {
+  type: 'flowchart' | 'mindmap' | null;
+  timestamp?: number;
+}
+
+interface MindMapViewProps {
+  selectedFileContent?: string | null;
+  triggerGeneration?: TriggerGeneration;
+  onGenerateVisualization?: (node: FileNode, type: 'flowchart' | 'mindmap') => void;
+}
+
+export default function MindMapView({ selectedFileContent = null, triggerGeneration, onGenerateVisualization }: MindMapViewProps) {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (triggerGeneration && triggerGeneration.type && triggerGeneration.timestamp) {
+      // A simple hook point: when triggerGeneration changes, we could auto-generate
+      // For now, just log — the parent can call onGenerateVisualization when needed.
+      console.log('[MindMapView] triggerGeneration', triggerGeneration.type, triggerGeneration.timestamp);
+    }
+  }, [triggerGeneration]);
 
   return (
     <div className="h-full flex flex-col bg-[#252526] overflow-hidden">
@@ -90,6 +110,13 @@ export default function MindMapView() {
       </div>
 
       <div className="mindmap-canvas">
+        {/* Optional small preview of the active file content for context */}
+        {selectedFileContent ? (
+          <div className="p-2 mb-2 text-xs text-[#9ca3af] border-b border-[#2d2d2d]">
+            <strong className="text-sm text-[#ccc]">File Preview:</strong>
+            <div className="truncate">{selectedFileContent.slice(0, 240)}</div>
+          </div>
+        ) : null}
         <div className="mindmap-grid">
           <div
             className={`mindmap-node ${selectedNode === 'feature1' ? 'selected' : ''}`}

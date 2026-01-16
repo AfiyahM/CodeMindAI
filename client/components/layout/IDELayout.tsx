@@ -39,6 +39,8 @@ interface IDELayoutProps {
     branch?: string;
     aiStatus?: 'idle' | 'processing' | 'ready';
   };
+  // Allow requesting visualizations from the layout (forwarded into MindMapView)
+  onGenerateVisualization?: (node: FileNode, type: 'flowchart' | 'mindmap') => void;
 }
 
 export default function IDELayout({
@@ -53,7 +55,8 @@ export default function IDELayout({
   onTabClick = () => {},
   onTabClose = () => {},
   analysisPanel,
-  statusBarProps = {}
+  statusBarProps = {},
+  onGenerateVisualization = () => {}
 }: IDELayoutProps) {
   const [activeView, setActiveView] = useState<string>('explorer');
   const [showSidebar, setShowSidebar] = useState(true);
@@ -62,8 +65,8 @@ export default function IDELayout({
   const [showAI, setShowAI] = useState(false);
 
   // Show analysis panel above terminal
-  const shouldShowAnalysisPanel =
-    !!(analysisPanel && (analysisPanel.content || analysisPanel.isAnalyzing));
+ const shouldShowAnalysisPanel =
+  !!analysisPanel; 
 
   const handleActivityChange = (view: string) => {
     if (view === 'ai') {
@@ -91,7 +94,7 @@ export default function IDELayout({
       case 'git':
         return <GitView />;
       case 'mindmap':
-        return <MindMapView />;
+        return <MindMapView onGenerateVisualization={onGenerateVisualization} />;
       case 'extensions':
         return (
           <div className="p-3 text-sm text-[#858585] text-center">
@@ -177,15 +180,14 @@ export default function IDELayout({
               </div>
 
               <div className="flex-1 overflow-y-auto p-4">
-                {analysisPanel?.content ? (
-                  <pre className="text-sm whitespace-pre-wrap">
-                    {analysisPanel.content}
-                  </pre>
-                ) : (
-                  <span className="text-[#777]">
-                    {analysisPanel?.isAnalyzing ? 'Analyzing…' : 'No analysis yet.'}
-                  </span>
-                )}
+             {analysisPanel?.isAnalyzing ? (
+  <span className="text-[#777]">Analyzing…</span>
+) : (
+  <pre className="text-sm whitespace-pre-wrap text-[#ddd] leading-relaxed">
+    {analysisPanel?.content || 'No analysis returned by model.'}
+  </pre>
+)}
+
               </div>
             </div>
           )}
@@ -196,7 +198,7 @@ export default function IDELayout({
 
         {/* RIGHT SIDE AI CHAT PANEL */}
         {showAI && (
-          <div className="w-[340px] h-full border-l border-[#333] bg-[#252526] flex-shrink-0 overflow-hidden">
+          <div className="w-[340px] h-full border-l border-[#333] bg-[#252526] shrink-0 overflow-hidden">
             <div className="flex items-center justify-between px-3 py-2 border-b border-[#333] bg-[#bd0b0b]">
               <span className="text-sm font-semibold text-[#e6edf3]">
                 AI Assistant
