@@ -110,6 +110,7 @@ function extractCodeOnly(aiText) {
  */
 function extractModelContent(result) {
   if (!result || !result.response) {
+    console.log('[extractModelContent] No result or response');
     return '';
   }
 
@@ -119,30 +120,82 @@ function extractModelContent(result) {
     result.model.startsWith('codegemma')
   );
 
+  console.log('[extractModelContent] Model:', result.model, 'Source:', result.source, 'IsCodeGemma:', isCodeGemma);
+  console.log('[extractModelContent] Response keys:', Object.keys(result.response || {}));
+
   if (result.source === 'local') {
     // For CodeGemma models, check response.response first
     if (isCodeGemma) {
-      return result.response?.response || 
-             result.response?.output || 
-             '';
+      // ollama.generate() returns: { response: string, model: string, done: boolean, ... }
+      // The response field contains the generated text
+      let content = '';
+      
+      // Try primary path: response.response (most common for ollama.generate)
+      if (result.response?.response && typeof result.response.response === 'string') {
+        content = result.response.response;
+        console.log('[extractModelContent] CodeGemma: Found content in response.response, length:', content.length);
+      }
+      // Try alternative paths
+      else if (result.response?.text && typeof result.response.text === 'string') {
+        content = result.response.text;
+        console.log('[extractModelContent] CodeGemma: Found content in response.text, length:', content.length);
+      }
+      else if (result.response?.output && typeof result.response.output === 'string') {
+        content = result.response.output;
+        console.log('[extractModelContent] CodeGemma: Found content in response.output, length:', content.length);
+      }
+      else if (typeof result.response === 'string') {
+        content = result.response;
+        console.log('[extractModelContent] CodeGemma: Response is string, length:', content.length);
+      }
+      
+      // Validate content is meaningful (not just a single character or very short)
+      if (content && typeof content === 'string') {
+        const trimmed = content.trim();
+        if (trimmed.length > 10) { // Require at least 10 characters
+          console.log('[extractModelContent] CodeGemma: Valid content found, length:', trimmed.length);
+          return trimmed;
+        } else {
+          console.warn('[extractModelContent] CodeGemma: Content too short (length:', trimmed.length, '), preview:', trimmed);
+        }
+      }
+      
+      // If still empty or too short, log the full response structure for debugging
+      console.error('[extractModelContent] CodeGemma: Failed to extract valid content');
+      console.log('[extractModelContent] CodeGemma response structure:', JSON.stringify(result.response, null, 2).slice(0, 1000));
     }
     // For other local models (Qwen, etc.), check message.content
-    return result.response?.message?.content || 
-           result.response?.output?.[0]?.content?.[0]?.text || 
-           result.response?.response || 
-           '';
+    // ollama.chat() returns: { message: { content: string, role: string }, ... }
+    const content = result.response?.message?.content || 
+                   result.response?.output?.[0]?.content?.[0]?.text || 
+                   result.response?.response ||
+                   result.response?.text ||
+                   '';
+    console.log('[extractModelContent] Other local model content length:', content?.length || 0);
+    if (content && typeof content === 'string' && content.trim()) {
+      return content;
+    }
+    // Log structure for debugging
+    console.log('[extractModelContent] Other local response structure:', JSON.stringify(result.response, null, 2).slice(0, 500));
   } else if (result.source === 'groq') {
     // Groq format: message.content or raw.choices[0].message.content
-    return result.response?.message?.content || 
-           result.response?.raw?.choices?.[0]?.message?.content || 
-           result.response?.raw?.choices?.[0]?.text || 
-           '';
+    const content = result.response?.message?.content || 
+                   result.response?.raw?.choices?.[0]?.message?.content || 
+                   result.response?.raw?.choices?.[0]?.text || 
+                   '';
+    console.log('[extractModelContent] Groq content length:', content?.length || 0);
+    if (content && typeof content === 'string' && content.trim()) {
+      return content;
+    }
   }
 
   // Fallback: try to stringify if nothing else works
-  return typeof result.response === 'string' 
+  console.log('[extractModelContent] Using fallback, response type:', typeof result.response);
+  const fallback = typeof result.response === 'string' 
     ? result.response 
-    : JSON.stringify(result.response);
+    : JSON.stringify(result.response, null, 2);
+  console.log('[extractModelContent] Fallback length:', fallback.length);
+  return fallback;
 }
 
 /**
@@ -161,8 +214,22 @@ async function callLocalOllama(model, messages = [], options = {}) {
     const response = await ollama.generate({
       model,
       prompt,
+      stream: false, // Explicitly disable streaming to get complete response
       options
     });
+
+    // Log the full response structure for debugging
+    console.log('[CODEGEMMA RESPONSE] Full response keys:', Object.keys(response || {}));
+    console.log('[CODEGEMMA RESPONSE] Response type:', typeof response);
+    console.log('[CODEGEMMA RESPONSE] Response.response type:', typeof response?.response);
+    console.log('[CODEGEMMA RESPONSE] Response.response length:', response?.response?.length || 0);
+    console.log('[CODEGEMMA RESPONSE] Response.response preview:', response?.response?.slice(0, 100) || 'N/A');
+    console.log('[CODEGEMMA RESPONSE] Response.done:', response?.done);
+
+    // Ensure response is complete
+    if (response && response.done === false) {
+      console.warn('[CODEGEMMA] Warning: Response may be incomplete (done: false)');
+    }
 
     return response;
   }
@@ -372,7 +439,10 @@ router.post('/analyze-repo', async (req, res) => {
   const { files = [], owner = 'unknown', repo = 'unknown' } = req.body;
 
   if (!Array.isArray(files) || files.length === 0) {
-    return res.status(400).json({ error: 'No files provided for analysis' });
+    return res.status(400).json({ 
+      success: false,
+      error: 'No files provided for analysis' 
+    });
   }
 
   try {
@@ -419,6 +489,43 @@ router.post('/analyze-repo', async (req, res) => {
       return acc;
     }, {});
 
+    // Language detection and statistics
+    const languageMap = {
+      'js': 'JavaScript', 'ts': 'TypeScript', 'jsx': 'JavaScript (React)', 'tsx': 'TypeScript (React)',
+      'py': 'Python', 'java': 'Java', 'cpp': 'C++', 'c': 'C', 'cs': 'C#',
+      'php': 'PHP', 'rb': 'Ruby', 'go': 'Go', 'rs': 'Rust',
+      'html': 'HTML', 'css': 'CSS', 'scss': 'SCSS', 'sass': 'SASS',
+      'json': 'JSON', 'yaml': 'YAML', 'yml': 'YAML', 'xml': 'XML',
+      'md': 'Markdown', 'sh': 'Shell', 'bash': 'Bash',
+      'sql': 'SQL', 'vue': 'Vue', 'svelte': 'Svelte'
+    };
+
+    const languageStats = {};
+    files.forEach(file => {
+      const ext = (file.path || '').split('.').pop()?.toLowerCase() || 'unknown';
+      const lang = languageMap[ext] || ext.toUpperCase();
+      if (!languageStats[lang]) {
+        languageStats[lang] = { count: 0, files: [], totalSize: 0 };
+      }
+      languageStats[lang].count++;
+      languageStats[lang].files.push(file.path);
+      languageStats[lang].totalSize += file.size || 0;
+    });
+
+    // Get primary languages (sorted by file count)
+    const primaryLanguages = Object.entries(languageStats)
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 10)
+      .map(([lang, stats]) => ({
+        language: lang,
+        files: stats.count,
+        sizeKB: (stats.totalSize / 1024).toFixed(2),
+        percentage: ((stats.count / files.length) * 100).toFixed(1)
+      }));
+
+    // Determine primary language
+    const primaryLanguage = primaryLanguages[0]?.language || 'Unknown';
+
     // directory structure (shallow)
     const dirStructure = {};
     files.forEach(file => {
@@ -448,73 +555,232 @@ router.post('/analyze-repo', async (req, res) => {
 
     const truncatedDir = JSON.stringify(dirStructure, null, 2).slice(0, 2000); // keep within prompt size
 
-    const analysisPrompt = `# Repository analysis request: ${owner}/${repo}
+    // Include snippets from key files for more specific analysis
+    const getFileSnippet = (file, maxLines = 30) => {
+      if (!file || !file.content) return null;
+      const lines = file.content.split('\n');
+      const snippet = lines.slice(0, maxLines).join('\n');
+      return snippet.length < file.content.length ? snippet + '\n... (truncated)' : snippet;
+    };
 
-Total files: ${files.length}
-Total size: ${totalSizeKb} KB
-File types: ${typesSummary}
-Top-level directories: ${[...new Set(files.map(f => f.path.split('/')[0]))].slice(0,10).join(', ')}
+    const keyFileSnippets = [];
+    // Add entry point snippets
+    entryPoints.slice(0, 2).forEach(ep => {
+      const snippet = getFileSnippet(ep, 25);
+      if (snippet) keyFileSnippets.push({ path: ep.path, content: snippet });
+    });
+    // Add config file snippets
+    const mainConfig = configFiles.find(f => f.path.includes('package.json') || f.path.includes('config'));
+    if (mainConfig) {
+      const snippet = getFileSnippet(mainConfig, 40);
+      if (snippet) keyFileSnippets.push({ path: mainConfig.path, content: snippet });
+    }
 
-Directory structure snapshot:
-\`\`\`json
-${truncatedDir}
+    // Determine model type early to create appropriate prompt
+    const localPrimary = await selectLocalModel(DEFAULT_LOCAL_PRIMARY);
+    const isCodeGemmaModel = localPrimary.startsWith('codemindai-gemma') || localPrimary.startsWith('codegemma');
+    
+    // Create a much simpler, more direct prompt for CodeGemma
+    const analysisPrompt = isCodeGemmaModel 
+      ? `Analyze this code repository: ${owner}/${repo}
+
+Repository stats:
+- Files: ${files.length} files, ${totalSizeKb} KB
+- Main language: ${primaryLanguage}
+- Languages: ${primaryLanguages.slice(0, 5).map(l => l.language).join(', ')}
+- Dependencies: ${allDependencies.length}
+- Tests: ${testFiles.length} test files
+
+Provide analysis covering:
+1. What this project does
+2. Main technologies used
+3. Code structure overview
+4. Dependencies status
+5. Testing coverage
+6. Code quality assessment
+7. Key recommendations
+
+Write clearly with bullet points.`
+      : `Analyze the repository "${owner}/${repo}" and provide a structured analysis.
+
+REPOSITORY INFORMATION:
+- Repository: ${owner}/${repo}
+- Total Files: ${files.length}
+- Total Size: ${totalSizeKb} KB
+- Primary Language: ${primaryLanguage}
+- Languages Used: ${primaryLanguages.map(l => `${l.language} (${l.percentage}%)`).join(', ')}
+- Top-level Directories: ${[...new Set(files.map(f => f.path.split('/')[0]))].slice(0,10).join(', ')}
+
+${!isCodeGemmaModel ? `LANGUAGE BREAKDOWN:
+${primaryLanguages.map((l, i) => `${i + 1}. ${l.language}: ${l.files} files (${l.percentage}%), ${l.sizeKB} KB`).join('\n')}
+
+DIRECTORY STRUCTURE:
+${truncatedDir.slice(0, 1500)}
+
+DEPENDENCIES (${allDependencies.length}):
+${allDependencies.length > 0 ? allDependencies.slice(0, 20).map(d => `- ${d.name}@${d.version}`).join('\n') : 'No package files found.'}
+${allDependencies.length > 20 ? `... and ${allDependencies.length - 20} more` : ''}
+
+KEY FILES:
+- Entry Points: ${entryPoints.length > 0 ? entryPoints.map(e => e.path).join(', ') : 'None found'}
+- Test Files: ${testFiles.length} files
+- Config Files: ${configFiles.length} files  
+- Documentation: ${docFiles.length} files
+
+${keyFileSnippets.length > 0 ? `## Key File Content Snippets
+
+${keyFileSnippets.map(f => `### ${f.path}
 \`\`\`
+${f.content}
+\`\`\`
+`).join('\n')}
 
-Dependencies (${allDependencies.length}):
-${allDependencies.length > 0 ? allDependencies.map(d => `- ${d.name} ${d.version}`).join('\n') : 'No package files parsed.'}
+*Use these code snippets to provide specific examples in your analysis.*\n` : ''}
 
-Entry points:
-${entryPoints.length > 0 ? entryPoints.map(e => `- ${e.path}`).join('\n') : 'None found'}
+---
 
-Tests: ${testFiles.length}
-Config files: ${configFiles.length}
-Docs: ${docFiles.length}
+ANALYSIS REQUIRED - Provide a structured analysis in the following format:
+` : ''}
 
-Please provide:
-1) High-level summary of project purpose.
-2) Architecture and main components.
-3) Dependency risks and outdated packages.
-4) Quick list of highest priority improvements (security, tests, CI).
-5) Example small tasks for a new contributor (3 tasks).
-6) Actionable next steps for production readiness.
+1. PROJECT OVERVIEW
+   - What this project does (2-3 sentences)
+   - Primary purpose and functionality
+   - Technology stack: ${primaryLanguages.slice(0, 5).map(l => l.language).join(', ')}
+   - Main language: ${primaryLanguage}
 
-Be concise but thorough. Use numbered lists and code examples when required.
+2. CODE STRUCTURE & ORGANIZATION
+   - How files are organized
+   - Main directories and their purposes
+   - Entry points and key files
+   - Code organization quality (good/fair/needs improvement)
+
+3. KEY COMPONENTS & ARCHITECTURE
+   - Main components/modules identified
+   - How they interact
+   - Architecture pattern (if identifiable)
+
+4. DEPENDENCIES ANALYSIS
+   - Main dependencies: ${allDependencies.slice(0, 10).map(d => d.name).join(', ')}
+   - Dependency count: ${allDependencies.length}
+   - Any security concerns or outdated packages
+
+5. TESTING STATUS
+   - Test files found: ${testFiles.length}
+   - Test coverage assessment
+   - Recommendations for testing
+
+6. CODE QUALITY ASSESSMENT
+   - Overall code quality (excellent/good/fair/poor)
+   - Strengths
+   - Areas for improvement
+   - Code smells or issues found
+
+7. RECOMMENDATIONS
+   - Top 5 priority improvements
+   - Quick wins for contributors
+   - Production readiness checklist
+
+8. SUMMARY
+   - One paragraph summary
+   - Overall assessment
+   - Next steps
+
+IMPORTANT: Write clearly and concisely. Use bullet points and short paragraphs. Start each section with a heading. Be specific about what you observe in the code.
 `;
 
-    const messages = [
-      { role: 'system', content: 'You are an expert software architect analyzing code repositories. Provide clear, actionable recommendations.' },
+    const messages = isCodeGemmaModel ? [
+      // Simpler prompt for CodeGemma - it works better with direct instructions
+      {
+        role: 'system',
+        content: 'You are a code reviewer. Analyze repositories and provide structured, clear analysis with specific observations about code, languages, structure, dependencies, and recommendations.'
+      },
+      {
+        role: 'user',
+        content: analysisPrompt
+      }
+    ] : [
+      { 
+        role: 'system', 
+        content: `You are an expert software architect and code reviewer. Provide comprehensive, structured analysis of codebases. Explain your findings clearly with specific examples. Use bullet points and clear headings.` 
+      },
       { role: 'user', content: analysisPrompt }
     ];
 
     // This can be heavy -> allow longer timeout and more tokens
    // const result = await generateWithFallback(messages, { timeoutMs: 220000, num_predict: 1500, temperature: 0.2, max_tokens: 2000 });
 
-    // Generate analysis
+    // Generate comprehensive analysis with higher token limits for detailed explanations
+    // CodeGemma needs more tokens to generate complete responses
     const result = await generateWithFallback(messages, { 
-      timeoutMs: 220000, 
-      num_predict: 1500, 
-      temperature: 0.2,
-      max_tokens: 2000 
+      timeoutMs: 300000, // 5 minutes for comprehensive analysis
+      num_predict: isCodeGemmaModel ? 4000 : 3000, // Even more tokens for CodeGemma
+      temperature: 0.4, // Higher temperature for more varied, natural responses
+      max_tokens: isCodeGemmaModel ? 4000 : 4000 // Increased token limit
     });
 
     // Extract analysis text using unified helper function
     const rawContent = extractModelContent(result);
-    console.log('[DEBUG] rawContent:', rawContent.slice(0, 200));
+    console.log('[analyze-repo] Raw content length:', rawContent?.length || 0);
+    console.log('[analyze-repo] Raw content preview (first 500 chars):', rawContent?.slice(0, 500) || 'EMPTY');
+    console.log('[analyze-repo] Raw content preview (last 200 chars):', rawContent?.slice(-200) || 'EMPTY');
     
-    const analysis = rawContent.trim() || 'No analysis generated - check model response format';
+    // Ensure analysis is always a non-empty string
+    let analysis = '';
+    if (rawContent && typeof rawContent === 'string') {
+      const trimmed = rawContent.trim();
+      
+      // Validate the response is meaningful (not just a single character or very short)
+      if (trimmed.length < 50) {
+        console.error('[analyze-repo] WARNING: Response is suspiciously short (length:', trimmed.length, ')');
+        console.error('[analyze-repo] Full content:', JSON.stringify(trimmed));
+        analysis = `Analysis response appears incomplete (only ${trimmed.length} characters received). This may indicate:\n` +
+                   `1. The model response was truncated\n` +
+                   `2. The model encountered an error\n` +
+                   `3. Network timeout occurred\n\n` +
+                   `Received content: "${trimmed}"\n\n` +
+                   `Please try again or check the server logs for more details.`;
+      } else {
+        analysis = trimmed;
+      }
+    } else if (rawContent) {
+      // If rawContent exists but isn't a string, stringify it
+      analysis = String(rawContent);
+      console.warn('[analyze-repo] Raw content was not a string, converted to string');
+    } else {
+      analysis = 'No analysis generated - check model response format. The model may not have returned a valid response.';
+      console.error('[analyze-repo] ERROR: No raw content extracted from model response');
+    }
 
+    console.log('[analyze-repo] Final analysis length:', analysis.length);
     console.log('[analyze-repo] Analysis complete. Source:', result.source, 'Model:', result.model);
+    
+    // Final validation
+    if (analysis.length < 50) {
+      console.error('[analyze-repo] CRITICAL: Final analysis is too short, this indicates a problem');
+    }
 
+    // Always return consistent response format with enhanced metadata
     return res.json({
       success: true,
-      analysis,
+      analysis: analysis, // Always a string
       metadata: {
         totalFiles: files.length,
         fileTypes: Object.keys(fileTypes).length,
         dependencies: allDependencies.length,
         usedModel: result.model,
         source: result.source,
-        analyzedAt: new Date().toISOString()
+        analyzedAt: new Date().toISOString(),
+        // Add language information for better display
+        languages: primaryLanguages.slice(0, 5).map(l => ({
+          name: l.language,
+          files: l.count,
+          percentage: l.percentage,
+          sizeKB: l.sizeKB
+        })),
+        primaryLanguage: primaryLanguage,
+        entryPoints: entryPoints.map(e => e.path),
+        testFilesCount: testFiles.length,
+        configFilesCount: configFiles.length
       }
     });
 

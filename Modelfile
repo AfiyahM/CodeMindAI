@@ -1,4 +1,23 @@
 FROM codegemma:2b
 
-PARAMETER temperature 0.2
-PARAMETER repeat_penalty 1.1
+# System prompt for better analysis outputs
+SYSTEM """You are an expert code reviewer and software architect. When analyzing code repositories, provide clear, structured, and detailed analysis. Use bullet points, numbered lists, and clear headings. Be specific about what you observe in the code, technologies used, code structure, dependencies, and provide actionable recommendations."""
+
+# Temperature: 0.3-0.4 for more natural, varied responses (was 0.2 which was too low)
+# Higher temperature helps with longer, more detailed analysis outputs
+PARAMETER temperature 0.35
+
+# Repeat penalty: Prevents repetition in longer outputs
+PARAMETER repeat_penalty 1.15
+
+# Context window: Larger context for repository analysis
+PARAMETER num_ctx 4096
+
+# Prediction length: Higher for detailed analysis (can be overridden in API calls)
+PARAMETER num_predict 4000
+
+# Top-p: Nucleus sampling for diverse outputs
+PARAMETER top_p 0.9
+
+# Top-k: Limit vocabulary choices
+PARAMETER top_k 40

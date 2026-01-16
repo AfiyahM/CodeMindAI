@@ -180,13 +180,23 @@ export default function IDELayout({
               </div>
 
               <div className="flex-1 overflow-y-auto p-4">
-             {analysisPanel?.isAnalyzing ? (
-  <span className="text-[#777]">Analyzing…</span>
-) : (
-  <pre className="text-sm whitespace-pre-wrap text-[#ddd] leading-relaxed">
-    {analysisPanel?.content || 'No analysis returned by model.'}
-  </pre>
-)}
+                {analysisPanel?.isAnalyzing ? (
+                  <div className="flex items-center gap-2 text-[#777]">
+                    <span>Analyzing…</span>
+                  </div>
+                ) : (
+                  <div className="text-sm whitespace-pre-wrap text-[#ddd] leading-relaxed">
+                    {analysisPanel?.content && analysisPanel.content.trim() ? (
+                      <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed">
+                        {analysisPanel.content}
+                      </pre>
+                    ) : (
+                      <div className="text-[#888] italic">
+                        No analysis content available. Check console for details.
+                      </div>
+                    )}
+                  </div>
+                )}
 
               </div>
             </div>

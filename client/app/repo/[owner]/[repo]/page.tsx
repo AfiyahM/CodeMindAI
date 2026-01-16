@@ -37,6 +37,9 @@ export default function RepoPage() {
   const params = useParams();
   const router = useRouter();
   const { owner, repo } = params as { owner: string; repo: string };
+// ADD THESE 2 LINES after line ~28 (after visualizationTrigger state):
+const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
+const [analysisResult, setAnalysisResult] = useState('');
 
   const [isLoading, setIsLoading] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -77,168 +80,215 @@ export default function RepoPage() {
     return languageMap[ext] || 'plaintext';
   };
 
-  const analyzeRepository = async () => {
-    if (!repoContent.length) {
-      setError('No repository content available to analyze');
+ const analyzeRepository = async () => {
+  if (!repoContent.length) {
+    setError('No repository content available to analyze');
+    return;
+  }
+
+  setIsAnalyzing(true);
+  setShowAnalysisPanel(true);
+  setError('');
+  setStreamingAnalysis('');
+  setAnalysisResult('');
+
+  try {
+    const githubToken = localStorage.getItem('github_token');
+    if (!githubToken) {
+      throw new Error('GitHub authentication required. Please sign in with GitHub.');
+    }
+
+    // Recursively walk the repository tree (limited) to collect files
+    const fetchAllRepoFiles = async () => {
+      const collected: GitHubFile[] = [];
+      const queue: GitHubFile[] = [...repoContent];
+      const headers = {
+        'Authorization': `token ${githubToken}`,
+        'Accept': 'application/vnd.github.v3+json'
+      };
+
+      while (queue.length && collected.length < 1000) {
+        const item = queue.shift();
+        if (!item) break;
+
+        if (item.type === 'file') {
+          collected.push(item);
+          continue;
+        }
+
+        // item.type === 'dir' -> fetch its contents
+        try {
+          const res = await axios.get(
+            `https://api.github.com/repos/${owner}/${repo}/contents/${item.path}`,
+            { headers, timeout: 30000 }
+          );
+
+          if (Array.isArray(res.data)) {
+            for (const child of res.data) {
+              queue.push(child as GitHubFile);
+            }
+          }
+        } catch (err) {
+          console.warn(`[Analysis] Failed to fetch directory ${item.path}:`, err);
+        }
+      }
+
+      return collected;
+    };
+
+    const allFiles = await fetchAllRepoFiles();
+
+    const importantFiles = allFiles
+      .filter(file => file.type === 'file' && (
+        file.name.endsWith('.js') ||
+        file.name.endsWith('.ts') ||
+        file.name.endsWith('.py') ||
+        file.name.endsWith('.java') ||
+        file.name === 'package.json' ||
+        file.name === 'requirements.txt' ||
+        file.name.toLowerCase() === 'readme.md'
+      ))
+      .slice(0, 10);
+
+    if (importantFiles.length === 0) {
+      setError('No supported files found for analysis');
+      setIsAnalyzing(false);
+      setShowAnalysisPanel(false);
       return;
     }
 
-    setIsAnalyzing(true);
-    setError('');
-    setStreamingAnalysis('');
+    console.log(`[Analysis] Analyzing ${importantFiles.length} important files...`);
 
-    try {
-      const githubToken = localStorage.getItem('github_token');
-      if (!githubToken) {
-        throw new Error('GitHub authentication required. Please sign in with GitHub.');
-      }
+    const BATCH_SIZE = 2;
+    const filesWithContent = [];
 
-      // Recursively walk the repository tree (limited) to collect files
-      const fetchAllRepoFiles = async () => {
-        const collected: GitHubFile[] = [];
-        const queue: GitHubFile[] = [...repoContent];
-        const headers = {
-          'Authorization': `token ${githubToken}`,
-          'Accept': 'application/vnd.github.v3+json'
-        };
-
-        while (queue.length && collected.length < 1000) {
-          const item = queue.shift();
-          if (!item) break;
-
-          if (item.type === 'file') {
-            collected.push(item);
-            continue;
-          }
-
-          // item.type === 'dir' -> fetch its contents
+    for (let i = 0; i < importantFiles.length; i += BATCH_SIZE) {
+      const batch = importantFiles.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (file) => {
           try {
-            const res = await axios.get(
-              `https://api.github.com/repos/${owner}/${repo}/contents/${item.path}`,
-              { headers, timeout: 30000 }
+            const response = await axios.get(
+              `https://api.github.com/repos/${owner}/${repo}/contents/${file.path}`,
+              {
+                headers: {
+                  'Authorization': `token ${githubToken}`,
+                  'Accept': 'application/vnd.github.v3.raw'
+                },
+                responseType: 'text',
+                timeout: 10000
+              }
             );
 
-            if (Array.isArray(res.data)) {
-              for (const child of res.data) {
-                // normalize minimal shape to GitHubFile
-                queue.push(child as GitHubFile);
-              }
-            }
-          } catch (err) {
-            console.warn(`[Analysis] Failed to fetch directory ${item.path}:`, err);
+            return {
+              path: file.path,
+              name: file.name,
+              content: response.data || '',
+              language: getFileExtension(file.name) || 'text',
+              size: file.size || 0
+            };
+          } catch (error) {
+            console.error(`[Analysis] Error fetching ${file.path}:`, error);
+            return null;
           }
-        }
-
-        return collected;
-      };
-
-      const allFiles = await fetchAllRepoFiles();
-
-      const importantFiles = allFiles
-        .filter(file => file.type === 'file' && (
-          file.name.endsWith('.js') ||
-          file.name.endsWith('.ts') ||
-          file.name.endsWith('.py') ||
-          file.name.endsWith('.java') ||
-          file.name === 'package.json' ||
-          file.name === 'requirements.txt' ||
-          file.name.toLowerCase() === 'readme.md'
-        ))
-        .slice(0, 10);
-
-      if (importantFiles.length === 0) {
-        setError('No supported files found for analysis');
-        setIsAnalyzing(false);
-        return;
-      }
-
-      console.log(`[Analysis] Analyzing ${importantFiles.length} important files...`);
-
-      const BATCH_SIZE = 2;
-      const filesWithContent = [];
-
-      for (let i = 0; i < importantFiles.length; i += BATCH_SIZE) {
-        const batch = importantFiles.slice(i, i + BATCH_SIZE);
-        const batchResults = await Promise.all(
-          batch.map(async (file) => {
-            try {
-              const response = await axios.get(
-                `https://api.github.com/repos/${owner}/${repo}/contents/${file.path}`,
-                {
-                  headers: {
-                    'Authorization': `token ${githubToken}`,
-                    'Accept': 'application/vnd.github.v3.raw'
-                  },
-                  responseType: 'text',
-                  timeout: 10000
-                }
-              );
-
-              return {
-                path: file.path,
-                name: file.name,
-                content: response.data || '',
-                language: getFileExtension(file.name) || 'text',
-                size: file.size || 0
-              };
-            } catch (error) {
-              console.error(`[Analysis] Error fetching ${file.path}:`, error);
-              return null;
-            }
-          })
-        );
-
-        filesWithContent.push(...batchResults.filter(Boolean));
-
-        if (i + BATCH_SIZE < importantFiles.length) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
-
-      if (filesWithContent.length === 0) {
-        throw new Error('Failed to fetch any file contents for analysis');
-      }
-
-      const response = await fetch(`${API_BASE_URL}/api/ai/analyze-repo`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${githubToken}`
-        },
-        body: JSON.stringify({
-          files: filesWithContent,
-          owner,
-          repo
         })
-      });
+      );
 
-      if (!response.ok) {
-        throw new Error(`Analysis failed: ${response.statusText}`);
+      filesWithContent.push(...batchResults.filter(Boolean));
+
+      if (i + BATCH_SIZE < importantFiles.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
-      
-      const data = await response.json();
-
-      if (!data.success) {
-        throw new Error(data.error || 'Analysis failed');
-      }
-
-      setStreamingAnalysis(
-  typeof data.analysis === 'string'
-    ? data.analysis.trim()
-    : JSON.stringify(data.analysis, null, 2)
-);
-
-    } catch (err: any) {
-      const errorMessage = err.response?.data?.message ||
-        err.response?.data?.error ||
-        err.message ||
-        'Failed to analyze repository';
-      console.error('[Analysis Error]', errorMessage);
-      setError(`Analysis failed: ${errorMessage}`);
-    } finally {
-      setIsAnalyzing(false);
     }
-  };
+
+    if (filesWithContent.length === 0) {
+      throw new Error('Failed to fetch any file contents for analysis');
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/ai/analyze-repo`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${githubToken}`
+      },
+      body: JSON.stringify({
+        files: filesWithContent,
+        owner,
+        repo
+      })
+    });
+
+    // Parse response - handle both success and error responses
+    let data;
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      throw new Error(`Failed to parse server response: ${response.statusText}`);
+    }
+
+    console.log('🔍 FULL API RESPONSE:', data);
+    console.log('📄 Analysis type:', typeof data.analysis);
+    console.log('📄 Analysis length:', data.analysis?.length || 0);
+    console.log('📄 Analysis preview:', data.analysis?.slice(0, 200) || 'EMPTY');
+    console.log('✅ Success:', data.success);
+    console.log('📊 Response status:', response.status, response.statusText);
+
+    // Handle HTTP errors (4xx, 5xx)
+    if (!response.ok) {
+      const errorMsg = data.error || data.message || `Analysis failed: ${response.statusText} (${response.status})`;
+      throw new Error(errorMsg);
+    }
+
+    // Handle API-level errors (success: false)
+    if (data.success === false) {
+      const errorMsg = data.error || data.message || data.details || 'Analysis failed';
+      throw new Error(errorMsg);
+    }
+
+    // Ensure success is true
+    if (data.success !== true) {
+      throw new Error('Invalid response format: success field missing or invalid');
+    }
+
+    // Ensure we have a valid analysis string
+    let analysisText = '';
+    if (typeof data.analysis === 'string' && data.analysis.trim()) {
+      analysisText = data.analysis.trim();
+    } else if (data.analysis) {
+      analysisText = JSON.stringify(data.analysis, null, 2);
+    } else {
+      analysisText = 'No analysis content received from server.';
+    }
+    
+    console.log('📝 Final analysisText length:', analysisText.length);
+    console.log('📝 Final analysisText preview:', analysisText.slice(0, 200));
+    
+    setAnalysisResult(analysisText);
+    setStreamingAnalysis(analysisText);
+
+  } catch (err: any) {
+    // Handle both fetch API errors and axios-style errors
+    let errorMessage = 'Failed to analyze repository';
+    
+    if (err.message) {
+      errorMessage = err.message;
+    } else if (err.response?.data?.error) {
+      errorMessage = err.response.data.error;
+    } else if (err.response?.data?.message) {
+      errorMessage = err.response.data.message;
+    } else if (typeof err === 'string') {
+      errorMessage = err;
+    }
+    
+    console.error('[Analysis Error]', errorMessage);
+    console.error('[Analysis Error Details]', err);
+    
+    setError(`Analysis failed: ${errorMessage}`);
+    setAnalysisResult(`Error: ${errorMessage}`);
+  } finally {
+    setIsAnalyzing(false);
+  }
+};
+
 
   const fetchRepoContent = useCallback(async (path: string = '') => {
     if (!owner || !repo) return;
@@ -435,14 +485,20 @@ export default function RepoPage() {
         branch: 'main',
         aiStatus: isAnalyzing ? 'processing' : 'ready'
       }}
-      analysisPanel={streamingAnalysis || isAnalyzing ? {
-        content: streamingAnalysis,
+      analysisPanel={
+  showAnalysisPanel
+    ? {
+        content: analysisResult || streamingAnalysis || 'Analyzing...',
         isAnalyzing: isAnalyzing,
         onClose: () => {
           setStreamingAnalysis('');
-          setIsAnalyzing(false);
+          setAnalysisResult('');
+          setShowAnalysisPanel(false);
         }
-      } : undefined}
+      }
+    : undefined
+}
+
     >
       <div className="h-full flex flex-col overflow-hidden">
         {/* Error Message */}
@@ -455,24 +511,30 @@ export default function RepoPage() {
 
         {/* AI Analysis Button Bar */}
         <div className="p-2 border-b border-[#30363d] bg-[#1c2128]">
-          <button
-            onClick={analyzeRepository}
-            disabled={isAnalyzing || repoContent.length === 0}
-            className="w-full px-4 py-1.5 bg-linear-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:from-gray-600 disabled:to-gray-600 text-white rounded flex items-center justify-center gap-2 transition-all font-semibold text-xs uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isAnalyzing ? (
-              <>
-                <Loader2 size={14} className="animate-spin" />
-                Analyzing Repository...
-              </>
-            ) : (
-              <>
-                <Sparkles size={14} />
-                Run AI Repository Analysis
-              </>
-            )}
-          </button>
-        </div>
+  <button
+    onClick={analyzeRepository}
+    disabled={isAnalyzing || repoContent.length === 0}
+    className="w-full px-4 py-1.5 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 disabled:from-gray-600 disabled:to-gray-600 text-white rounded flex items-center justify-center gap-2 transition-all font-semibold text-xs uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
+  >
+    {isAnalyzing ? (
+      <>
+        <Loader2 size={14} className="animate-spin" />
+        Analyzing Repository...
+      </>
+    ) : showAnalysisPanel ? (
+      <>
+        <Sparkles size={14} />
+        View Analysis
+      </>
+    ) : (
+      <>
+        <Sparkles size={14} />
+        Run AI Repository Analysis
+      </>
+    )}
+  </button>
+</div>
+
 
         {/* --- SPLIT VIEW AREA (Editor + Visualizer) --- */}
         <div className="flex-1 flex flex-row overflow-hidden">
