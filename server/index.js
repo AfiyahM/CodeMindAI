@@ -10,7 +10,7 @@ const githubRoutes = require('./routes/github');
 // Create Express app FIRST
 const app = express();
 const PORT = process.env.PORT || 4000;
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3001';
 const GITHUB_CALLBACK_URL = process.env.GITHUB_CALLBACK_URL || 'http://localhost:4000/api/github/callback';
 
 // Setup middleware
@@ -43,6 +43,11 @@ app.get('/health', (req, res) => {
 app.use('/api/github', githubRoutes);
 app.use('/api/ai', aiRoutes);
 
+// Test Route
+app.get('/', (req, res) => {
+    res.send('CodeMind AI Server is Running');
+})
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
@@ -70,6 +75,11 @@ app.use((req, res) => {
 
 // Error handler middleware
 app.use((err, req, res, next) => {
+  // Check if response has already been sent
+  if (res.headersSent) {
+    return next(err);
+  }
+
   console.error('[Error Handler]', {
     message: err.message,
     path: req.path,
@@ -85,32 +95,60 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════════════════╗
-║         🚀 CodeMind.AI Server Started ✨           ║
+║         🚀 CodeMind.AI Server Started ✨          ║
 ╠════════════════════════════════════════════════════╣
 ║                                                    ║
-║  Server:   http://localhost:${PORT}               ║
-║  Frontend: ${FRONTEND_URL}                    ║
-║  Health:   http://localhost:${PORT}/health       ║
-║  Env:      ${process.env.NODE_ENV || 'development'}                           ║
+║  Server:   http://localhost:${PORT}                ║
+║  Frontend: ${FRONTEND_URL}                         ║
+║  Health:   http://localhost:${PORT}/health         ║
+║  Env:      ${process.env.NODE_ENV || 'development'}║
 ║                                                    ║
 ║  GitHub OAuth:                                     ║
-║  ✓ Client ID: ${process.env.GITHUB_CLIENT_ID ? 'Set ✓' : 'NOT SET ✗'}                        ║
-║  ✓ Callback URL: ${GITHUB_CALLBACK_URL.substring(0, 35)}║
+║  ✓ Client ID: ${process.env.GITHUB_CLIENT_ID ? 'Set ✓' : 'NOT SET ✗'}║
+║  ✓ Callback URL: ${GITHUB_CALLBACK_URL}            ║
 ║                                                    ║
 ╚════════════════════════════════════════════════════╝
   `);
 });
 
+// Handle server errors
+server.on('error', (error) => {
+  console.error('[Server Error]', error);
+  process.exit(1);
+});
+
 // Handle graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
-  process.exit(0);
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
 });
 
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
-  process.exit(1);
+  server.close(() => {
+    process.exit(1);
+  });
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Keep the process alive
+setInterval(() => {
+  // This is just to keep the process alive
+}, 10000);

@@ -1,9 +1,12 @@
 'use client';
 
-import { Send, Loader, Copy } from 'lucide-react';
+import { Send, Loader, Copy, Mic, MicOff, Volume2, VolumeX, Pause, Play } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import useSpeechToText from '../../hooks/useSpeechToText';
+import useTextToSpeech from '../../hooks/useTextToSpeech';
+import { useVoiceSettings } from '../../lib/voiceSettings';
 
 // @ts-ignore - react-syntax-highlighter does not provide types in this project
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -33,7 +36,100 @@ export default function AIChatView() {
 
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const autoSendTriggeredRef = useRef(false);
+  
+  const { settings: voiceSettings, updateSettings } = useVoiceSettings();
+  const autoSpeak = voiceSettings.autoSpeak;
+  
+  const { 
+    isListening, 
+    transcript, 
+    finalTranscript,
+    error: sttError,
+    isSupported: sttSupported,
+    startListening, 
+    stopListening 
+  } = useSpeechToText({
+    onError: (error) => {
+      console.error('Speech recognition error:', error);
+    },
+    onFinalResult: (finalText) => {
+      // Process voice commands
+      const command = finalText.toLowerCase().trim();
+      
+      // Check for specific commands
+      if (command.includes('open file') || command.includes('create file')) {
+        const filename = command.replace(/(open|create)\s+file\s+/i, '').trim();
+        if (filename) {
+          setInput(`Please ${command.includes('open') ? 'open' : 'create'} the file "${filename}"`);
+          autoSendTriggeredRef.current = true;
+          setTimeout(() => handleSend(), 500);
+        }
+      } else if (command.includes('analyze') || command.includes('explain') || command.includes('generate')) {
+        // Let AI handle technical questions
+        setInput(finalText);
+        autoSendTriggeredRef.current = true;
+        setTimeout(() => handleSend(), 500);
+      } else {
+        // Regular chat message
+        setInput(finalText);
+        autoSendTriggeredRef.current = true;
+        setTimeout(() => handleSend(), 200);
+      }
+    }
+  });
+
+  const {
+    isSpeaking,
+    isPaused,
+    speak,
+    pause,
+    resume,
+    stop: stopSpeaking,
+    selectedVoice,
+    availableVoices,
+  } = useTextToSpeech();
+
+  // Update TTS voice when settings change
+  useEffect(() => {
+    if (voiceSettings.voiceName && availableVoices.length > 0) {
+      const voice = availableVoices.find(v => v.name === voiceSettings.voiceName);
+      if (voice && voice !== selectedVoice) {
+        // The hook will handle this, but we can trigger a re-speak if needed
+      }
+    }
+  }, [voiceSettings.voiceName, availableVoices, selectedVoice]);
+
+  useEffect(() => {
+    // Only update input with interim results, not final (final triggers auto-send)
+    if (transcript && !finalTranscript) {
+      setInput(transcript);
+    }
+  }, [transcript, finalTranscript]);
+
+  // Auto-speak AI responses if enabled
+  useEffect(() => {
+    if (autoSpeak && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role === 'assistant' && !isLoading) {
+        // Small delay to ensure message is rendered
+        setTimeout(() => {
+          setSpeakingMessageId(lastMessage.id);
+          const voice = voiceSettings.voiceName 
+            ? availableVoices.find(v => v.name === voiceSettings.voiceName) || selectedVoice
+            : selectedVoice;
+          speak(lastMessage.content, {
+            rate: voiceSettings.rate,
+            pitch: voiceSettings.pitch,
+            volume: voiceSettings.volume,
+            voice: voice || undefined,
+          });
+        }, 300);
+      }
+    }
+  }, [messages, autoSpeak, isLoading, speak, voiceSettings, availableVoices, selectedVoice]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -44,7 +140,13 @@ export default function AIChatView() {
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim()) return;
+    if (!input.trim()) {
+      autoSendTriggeredRef.current = false;
+      return;
+    }
+
+    if (isListening) stopListening();
+    autoSendTriggeredRef.current = false;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -66,9 +168,15 @@ export default function AIChatView() {
       const response = await axios.post(`${API_BASE_URL}/api/ai/chat`, {
         message: userMessage.content,
         conversationHistory,
+        timeout: 30000, // 30 second timeout
       });
 
       const assistantText = response.data?.response || "I couldn't generate a response.";
+      
+      if (!response.data?.response) {
+        console.error('API Error:', response.data);
+        throw new Error('AI service unavailable');
+      }
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -78,6 +186,22 @@ export default function AIChatView() {
       };
 
       setMessages(prev => [...prev, assistantMessage]);
+
+      // Auto-speak if enabled
+      if (autoSpeak) {
+        setTimeout(() => {
+          setSpeakingMessageId(assistantMessage.id);
+          const voice = voiceSettings.voiceName 
+            ? availableVoices.find(v => v.name === voiceSettings.voiceName) || selectedVoice
+            : selectedVoice;
+          speak(assistantText, {
+            rate: voiceSettings.rate,
+            pitch: voiceSettings.pitch,
+            volume: voiceSettings.volume,
+            voice: voice || undefined,
+          });
+        }, 300);
+      }
 
     } catch (err) {
       setMessages(prev => [
@@ -127,6 +251,11 @@ export default function AIChatView() {
         .message {
           display: flex;
           animation: fadeIn 0.25s ease-out;
+          position: relative;
+        }
+
+        .message:hover .msg-bubble {
+          position: relative;
         }
 
         @keyframes fadeIn {
@@ -161,15 +290,26 @@ export default function AIChatView() {
           border-top: 1px solid rgba(255,255,255,0.1);
           background: #2a2d2e;
         }
+       .pulse-ring {
+          box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+          animation: pulse-red 1.5s infinite;
+        }
+        
+        @keyframes pulse-red {
+          0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+          70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+          100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
       `}</style>
 
-
-      <div className="chat-header">AI Assistant</div>
+      <div className="chat-header flex items-center justify-between">
+        <span>AI Assistant</span>
+      </div>
 
       <div className="chat-messages">
         {messages.map((m) => (
           <div key={m.id} className={`message ${m.role}`}>
-            <div className="msg-bubble">
+            <div className={`msg-bubble ${speakingMessageId === m.id && isSpeaking ? 'ring-2 ring-blue-500/50' : ''}`}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -236,6 +376,33 @@ export default function AIChatView() {
 
       <div className="chat-input-container">
         <div className="flex gap-2 items-center">
+
+          <button
+            onClick={isListening ? stopListening : startListening}
+            disabled={!sttSupported}
+            className={`p-2 rounded-full transition-all ${
+              isListening 
+                ? "bg-red-500/30 text-red-500 pulse-ring border-2 border-red-500/50" 
+                : sttSupported
+                ? "bg-black/20 text-gray-400 hover:text-white hover:bg-black/40"
+                : "bg-black/20 text-gray-600 cursor-not-allowed opacity-50"
+            }`}
+            title={
+              !sttSupported 
+                ? "Speech recognition not supported in this browser" 
+                : isListening 
+                ? "Stop listening" 
+                : "Start voice input"
+            }
+          >
+            <Mic size={16} className={isListening ? "text-red-500" : ""} />
+          </button>
+          {sttError && (
+            <span className="text-xs text-red-400 px-2" title={sttError}>
+              ⚠️
+            </span>
+          )}
+          
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}

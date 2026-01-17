@@ -13,6 +13,11 @@ import GitView from '../views/GitView';
 import MindMapView from '../views/MindMapView';
 import SettingsView from '../views/SettingsView';
 
+interface TriggerGeneration {
+  type: 'flowchart' | 'mindmap' | null;
+  timestamp?: number;
+}
+
 interface IDELayoutProps {
   children?: ReactNode;
   files?: FileNode[];
@@ -20,10 +25,14 @@ interface IDELayoutProps {
   onFileClick?: (file: FileNode) => void;
   onDirToggle?: (path: string) => void;
   selectedFile?: FileNode | null;
+  currentPath?: string;
+  onNavigateToPath?: (path: string) => void;
   tabs?: EditorTab[];
   activeTabId?: string;
   onTabClick?: (tabId: string) => void;
   onTabClose?: (tabId: string) => void;
+  fileContent?: string;
+  visualizationTrigger?: TriggerGeneration;
 
   // Analysis panel
   analysisPanel?: {
@@ -50,12 +59,16 @@ export default function IDELayout({
   onFileClick = () => {},
   onDirToggle = () => {},
   selectedFile = null,
+  currentPath = '',
+  onNavigateToPath = () => {},
   tabs = [],
   activeTabId = '',
   onTabClick = () => {},
   onTabClose = () => {},
   analysisPanel,
   statusBarProps = {},
+  fileContent = '',
+  visualizationTrigger = { type: null },
   onGenerateVisualization = () => {}
 }: IDELayoutProps) {
   const [activeView, setActiveView] = useState<string>('explorer');
@@ -64,6 +77,9 @@ export default function IDELayout({
   // Right side AI panel
   const [showAI, setShowAI] = useState(false);
 
+  // Mind map modal state
+  const [showMindMap, setShowMindMap] = useState(false);
+
   // Show analysis panel above terminal
  const shouldShowAnalysisPanel =
   !!analysisPanel; 
@@ -71,6 +87,10 @@ export default function IDELayout({
   const handleActivityChange = (view: string) => {
     if (view === 'ai') {
       setShowAI(prev => !prev);
+      return;
+    }
+    if (view === 'mindmap') {
+      setShowMindMap(prev => !prev);
       return;
     }
     setActiveView(view);
@@ -87,6 +107,8 @@ export default function IDELayout({
             onFileClick={onFileClick}
             onDirToggle={onDirToggle}
             selectedFile={selectedFile}
+            currentPath={currentPath}
+            onNavigateToPath={onNavigateToPath}
           />
         );
       case 'search':
@@ -94,7 +116,11 @@ export default function IDELayout({
       case 'git':
         return <GitView />;
       case 'mindmap':
-        return <MindMapView onGenerateVisualization={onGenerateVisualization} />;
+        return (
+          <div className="p-3 text-sm text-[#858585] text-center">
+            Click the mind map button again to open the mind map view
+          </div>
+        );
       case 'extensions':
         return (
           <div className="p-3 text-sm text-[#858585] text-center">
@@ -224,6 +250,20 @@ export default function IDELayout({
 
             <div className="flex-1 overflow-hidden">
               <AIChatView />
+            </div>
+          </div>
+        )}
+
+        {/* MIND MAP MODAL OVERLAY */}
+        {showMindMap && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="w-[90%] h-[90%] max-w-6xl max-h-[90vh] bg-[#1e1e1e] rounded-lg shadow-2xl overflow-hidden">
+              <MindMapView 
+                selectedFileContent={selectedFile ? fileContent : null}
+                triggerGeneration={visualizationTrigger}
+                onGenerateVisualization={onGenerateVisualization}
+                onClose={() => setShowMindMap(false)}
+              />
             </div>
           </div>
         )}

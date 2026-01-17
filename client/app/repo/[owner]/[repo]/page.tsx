@@ -51,6 +51,8 @@ const [analysisResult, setAnalysisResult] = useState('');
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const [streamingAnalysis, setStreamingAnalysis] = useState('');
   const [visualizationTrigger, setVisualizationTrigger] = useState<{ type: 'flowchart' | 'mindmap' | null; timestamp?: number }>({ type: null });
+  const [currentPath, setCurrentPath] = useState('');
+  const [folderContents, setFolderContents] = useState<Record<string, GitHubFile[]>>({});
 
   const getFileExtension = (filename: string) => {
     return filename.split('.').pop()?.toLowerCase() || '';
@@ -317,12 +319,24 @@ const [analysisResult, setAnalysisResult] = useState('');
         throw new Error('No data received from GitHub API');
       }
 
+      let files: GitHubFile[] = [];
       if (Array.isArray(response.data)) {
-        setRepoContent(response.data);
+        files = response.data;
       } else if ('message' in response.data) {
         throw new Error((response.data as any).message);
       } else {
-        setRepoContent([response.data]);
+        files = [response.data];
+      }
+
+      if (path === '') {
+        // Root level - set main repo content
+        setRepoContent(files);
+      } else {
+        // Subfolder - cache the contents
+        setFolderContents(prev => ({
+          ...prev,
+          [path]: files
+        }));
       }
     } catch (err: any) {
       const errorMessage = err.response?.data?.message || err.message || 'Failed to load repository content';
@@ -388,22 +402,85 @@ const [analysisResult, setAnalysisResult] = useState('');
 
   const handleItemClick = useCallback((item: GitHubFile) => {
     if (item.type === 'dir') {
+      // Toggle expansion state
       setExpandedDirs(prev => ({
         ...prev,
         [item.path]: !prev[item.path]
       }));
-      fetchRepoContent(item.path);
+      
+      // Fetch folder contents if not already cached
+      if (!folderContents[item.path] && !expandedDirs[item.path]) {
+        fetchRepoContent(item.path);
+      }
     } else {
       fetchFileContent(item);
     }
-  }, [fetchRepoContent, fetchFileContent]);
+  }, [fetchRepoContent, fetchFileContent, expandedDirs, folderContents]);
 
+  // Build hierarchical tree structure from flat file list
   const convertToFileNodes = (githubFiles: GitHubFile[]): FileNode[] => {
-    return githubFiles.map(file => ({
-      id: file.path, // Use path instead of sha - paths are unique within a repo tree
-      name: file.name,
-      type: file.type === 'dir' ? 'directory' : 'file'
-    }));
+    if (githubFiles.length === 0) return [];
+
+    // Create a map to store nodes by path
+    const nodeMap = new Map<string, FileNode>();
+    const rootNodes: FileNode[] = [];
+
+    // Include cached folder contents
+    const allFiles = [...githubFiles];
+    Object.values(folderContents).forEach(files => {
+      allFiles.push(...files);
+    });
+
+    // First pass: create all nodes
+    allFiles.forEach(file => {
+      const node: FileNode = {
+        id: file.path,
+        name: file.name,
+        type: file.type === 'dir' ? 'directory' : 'file',
+        children: file.type === 'dir' ? [] : undefined
+      };
+      nodeMap.set(file.path, node);
+    });
+
+    // Second pass: build hierarchy
+    allFiles.forEach(file => {
+      const node = nodeMap.get(file.path)!;
+      const pathParts = file.path.split('/');
+      
+      if (pathParts.length === 1) {
+        // Root level file/folder
+        rootNodes.push(node);
+      } else {
+        // Nested file/folder - find parent
+        const parentPath = pathParts.slice(0, -1).join('/');
+        const parentNode = nodeMap.get(parentPath);
+        
+        if (parentNode && parentNode.type === 'directory') {
+          if (!parentNode.children) {
+            parentNode.children = [];
+          }
+          parentNode.children.push(node);
+        } else {
+          // Parent not found in current list, add to root
+          rootNodes.push(node);
+        }
+      }
+    });
+
+    // Sort: directories first, then files, both alphabetically
+    const sortNodes = (nodes: FileNode[]): FileNode[] => {
+      return nodes.sort((a, b) => {
+        if (a.type !== b.type) {
+          return a.type === 'directory' ? -1 : 1;
+        }
+        return a.name.localeCompare(b.name);
+      }).map(node => ({
+        ...node,
+        children: node.children ? sortNodes(node.children) : undefined
+      }));
+    };
+
+    return sortNodes(rootNodes);
   };
 
   const convertFileToNode = (file: GitHubFile | null): FileNode | null => {
@@ -423,13 +500,41 @@ const [analysisResult, setAnalysisResult] = useState('');
   };
 
   const handleDirToggle = (nodeId: string) => {
-    const dir = repoContent.find(f => f.path === nodeId);
-    if (dir && dir.type === 'dir') {
+    // Find the directory in the hierarchical structure
+    const findDirInTree = (nodes: FileNode[], targetId: string): FileNode | null => {
+      for (const node of nodes) {
+        if (node.id === targetId) {
+          return node;
+        }
+        if (node.children) {
+          const found = findDirInTree(node.children, targetId);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const dir = findDirInTree(convertToFileNodes(repoContent), nodeId);
+    if (dir && dir.type === 'directory') {
       setExpandedDirs(prev => ({
         ...prev,
-        [dir.path]: !prev[dir.path]
+        [nodeId]: !prev[nodeId]
       }));
-      fetchRepoContent(dir.path);
+      
+      // Fetch folder contents if not already cached
+      if (!folderContents[nodeId] && !expandedDirs[nodeId]) {
+        fetchRepoContent(nodeId);
+      }
+    }
+  };
+
+  const handleNavigateToPath = (path: string) => {
+    setCurrentPath(path);
+    // Reset expanded dirs to show only the current path structure
+    setExpandedDirs({});
+    // Fetch content for new path if it's not root and not cached
+    if (path && !folderContents[path]) {
+      fetchRepoContent(path);
     }
   };
 
@@ -447,7 +552,6 @@ const [analysisResult, setAnalysisResult] = useState('');
       }, 300);
     }
   };
-
   const tabs: EditorTab[] = selectedFile ? [{
     id: selectedFile.path, // Use path instead of sha for consistency
     name: selectedFile.name,
@@ -472,6 +576,8 @@ const [analysisResult, setAnalysisResult] = useState('');
       onFileClick={handleFileNodeClick}
       onDirToggle={handleDirToggle}
       selectedFile={convertFileToNode(selectedFile)}
+      currentPath={currentPath}
+      onNavigateToPath={handleNavigateToPath}
       tabs={tabs}
       activeTabId={selectedFile?.path || ''}
       onTabClick={() => { }}
@@ -552,21 +658,10 @@ const [analysisResult, setAnalysisResult] = useState('');
             ) : (
               <div className="flex items-center justify-center h-full text-center flex-col opacity-50">
                 <Code className="w-16 h-16 text-[#7d8590] mb-4" />
-                <p className="text-[#7d8590]">No file selected</p>
+                <p className="text-[#7d8590]">Select a file to view its contents</p>
               </div>
             )}
           </div>
-
-          {/* RIGHT: Mind Map / Visualization Panel */}
-          {/* Fixed width of 400px (or utilize resizing libraries in future) */}
-          <div className="w-[400px] shrink-0 bg-[#1e1e1e] flex flex-col border-l border-[#30363d]">
-             {/* Pass the ACTIVE file content to the Visualizer */}
-            <MindMapView
-              selectedFileContent={selectedFile ? fileContent : null}
-              triggerGeneration={visualizationTrigger}
-            />
-          </div>
-
         </div>
       </div>
     </IDELayout>

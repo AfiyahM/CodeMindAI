@@ -1,5 +1,6 @@
 'use client';
 
+<<<<<<< Updated upstream
 import React, { useState, useEffect } from 'react';
 import { Network, GitBranch, Activity, FileCode, AlertCircle } from 'lucide-react';
 import MermaidChart from '../MermaidChart';
@@ -17,6 +18,26 @@ export default function MindMapView({ selectedFileContent, triggerGeneration }: 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'flowchart' | 'mindmap' | null>(null);
+=======
+import { Network, X } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { FileNode } from './ExplorerView';
+
+interface TriggerGeneration {
+  type: 'flowchart' | 'mindmap' | null;
+  timestamp?: number;
+}
+
+interface MindMapViewProps {
+  selectedFileContent?: string | null;
+  triggerGeneration?: TriggerGeneration;
+  onGenerateVisualization?: (node: FileNode, type: 'flowchart' | 'mindmap') => void;
+  onClose?: () => void;
+}
+
+export default function MindMapView({ selectedFileContent = null, triggerGeneration, onGenerateVisualization, onClose }: MindMapViewProps) {
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+>>>>>>> Stashed changes
 
   // Reset state when a new file is selected
   useEffect(() => {
@@ -117,6 +138,7 @@ export default function MindMapView({ selectedFileContent, triggerGeneration }: 
 
       {/* --- HEADER SECTION --- */}
       <div className="mindmap-header">
+<<<<<<< Updated upstream
         <div className="header-title">
           <Network size={14} />
           <span>Code Visualization</span>
@@ -146,6 +168,19 @@ export default function MindMapView({ selectedFileContent, triggerGeneration }: 
           >
             <Activity size={14} />
             Mind Map
+=======
+        <div className="flex items-center justify-between w-full">
+          <div className="flex items-center gap-2">
+            <Network size={16} />
+            Mind Map
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-[#3e3e42]/50 rounded transition-colors"
+            aria-label="Close mind map"
+          >
+            <X size={16} className="text-[#858585] hover:text-[#cccccc]" />
+>>>>>>> Stashed changes
           </button>
         </div>
       </div>

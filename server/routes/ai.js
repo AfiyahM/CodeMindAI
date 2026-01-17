@@ -5,14 +5,22 @@
 const express = require('express');
 const router = express.Router();
 const { Ollama } = require('ollama');
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 const fetch = require('node-fetch'); // for Groq fallback
 require('dotenv').config(); // ensure .env is loaded
 
-// Initialize Ollama client
-const ollama = new Ollama({
-  host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
-  requestTimeout: 60000 // 60s default request timeout for Ollama SDK
-});
+// Initialize Ollama client with error handling
+let ollama = null;
+try {
+  ollama = new Ollama({
+    host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
+    requestTimeout: 60000 // 60s default request timeout for Ollama SDK
+  });
+  console.log('[AI Routes] Ollama client initialized');
+} catch (error) {
+  console.warn('[AI Routes] Failed to initialize Ollama client:', error.message);
+  console.log('[AI Routes] AI features will be limited to cloud services only');
+}
 
 // Groq configuration (fallback)
 const GROQ_API_KEY = process.env.GROQ_API_KEY || null;
@@ -203,6 +211,9 @@ function extractModelContent(result) {
  * Returns parsed response object or throws.
  */
 async function callLocalOllama(model, messages = [], options = {}) {
+  if (!ollama) {
+    throw new Error('Ollama client not available');
+  }
 
   // ---- CodeGemma requires instruction-style prompt ----
   if (model.startsWith('codemindai-gemma') || model.startsWith('codegemma')) {
@@ -298,6 +309,10 @@ async function callGroq(model, messages = [], options = {}) {
  *  4) fallback to model param
  */
 async function selectLocalModel(preferred = DEFAULT_LOCAL_PRIMARY) {
+  if (!ollama) {
+    throw new Error('Ollama client not available');
+  }
+  
   try {
     const listed = (await ollama.list()).models || [];
     const names = listed.map(m => m.name || m);
@@ -861,45 +876,172 @@ router.post('/explain', async (req, res) => {
 router.post('/chat', async (req, res) => {
   const { message, conversationHistory } = req.body;
 
-  if (!message || typeof message !== 'string') return res.status(400).json({ error: 'No message provided' });
+  if (!message) {
+    return res.status(400).json({ error: 'No message provided' });
+  }
 
-  try {
-    console.log('[chat] Message length:', message.length);
+  // Simple fallback responses when no AI services are available
+  const getFallbackResponse = (msg) => {
+    const lowerMsg = msg.toLowerCase();
+    if (lowerMsg.includes('hello') || lowerMsg.includes('hi')) {
+      return "Hello! I'm your AI coding assistant. How can I help you with your code today?";
+    }
+    if (lowerMsg.includes('help')) {
+      return "I can help you with coding tasks like:\n- Writing and debugging code\n- Explaining code concepts\n- Generating code snippets\n- Reviewing and optimizing code\n\nWhat would you like help with?";
+    }
+    if (lowerMsg.includes('code')) {
+      return "I'd be happy to help you with your code! Please share the specific code you're working on or describe what you'd like to accomplish, and I'll assist you.";
+    }
+    return "I'm here to help with your coding needs. Could you please provide more details about what you'd like assistance with?";
+  };
 
-    const systemMsg = {
-      role: 'system',
-      content: 'You are an expert AI coding assistant integrated into an IDE. Help with code analysis, debugging, refactoring, and programming questions. Provide clear, actionable answers; use code blocks when showing code.'
-    };
-
-    const messages = [systemMsg];
-    if (Array.isArray(conversationHistory)) {
-      // Only keep last N messages to avoid huge context
-      const trimmed = conversationHistory.slice(-12);
-      messages.push(...trimmed);
+  // Helper function to try Gemini with a specific model
+  const tryGeminiModel = async (modelName) => {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error("GEMINI_API_KEY is missing in .env file");
     }
 
-    messages.push({ role: 'user', content: message });
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const geminiModel = genAI.getGenerativeModel({ model: modelName });
 
+    // Transform history to Gemini format (roles: 'user' and 'model')
+    const history = (conversationHistory || []).map(msg => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }]
+    }));
+
+    if (history.length > 0 && history[0].role === 'model') {
+      console.log("Creating fresh history (removing AI greeting)...");
+      history.shift();
+    }
+
+    const chat = geminiModel.startChat({
+      history: history,
+      generationConfig: {
+        maxOutputTokens: 1000,
+        temperature: 0.7,
+      },
+      safetySettings: [
+        {
+          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+        {
+          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
+        },
+      ],
+    });
+
+    const result = await chat.sendMessage(message);
+    const response = await result.response;
+    return response.text();
+  };
+
+  // Wrap everything in try-catch to prevent double response sending
+  try {
+    // Check if any AI services are available
+    const hasGemini = !!process.env.GEMINI_API_KEY;
+    const hasGroq = !!process.env.GROQ_API_KEY;
+    const hasOllama = !!ollama;
+
+    console.log(`[Chat] API Keys Status - Gemini: ${hasGemini ? 'SET' : 'MISSING'}, Groq: ${hasGroq ? 'SET' : 'MISSING'}, Ollama: ${hasOllama ? 'AVAILABLE' : 'NOT_AVAILABLE'}`);
+    console.log(`[Chat] Gemini Key Length: ${process.env.GEMINI_API_KEY?.length || 0} characters`);
+    console.log(`[Chat] Groq Key Length: ${process.env.GROQ_API_KEY?.length || 0} characters`);
+
+    // If no AI services are available, return a fallback response
+    if (!hasGemini && !hasGroq && !hasOllama) {
+      console.log('[Chat] No AI services available, using fallback response');
+      return res.json({ response: getFallbackResponse(message) });
+    }
+
+    // Try Gemini models in order
+    const geminiModels = ['gemini-pro', 'gemini-1.5-pro', 'gemini-1.5-flash'];
+    let geminiError = null;
+
+<<<<<<< Updated upstream
     const result = await generateWithFallback(messages, { timeoutMs: 30000, num_predict: 600, temperature: 0.6 });
 
     // Extract content using unified helper function
     const rawContent = extractModelContent(result);
     const aiResponse = rawContent && rawContent.trim() ? rawContent.trim() : 'I could not generate a response. Please try again.';
+=======
+    if (hasGemini) {
+      for (const modelName of geminiModels) {
+        try {
+          console.log(`--- Trying Gemini model: ${modelName} ---`);
+          const text = await tryGeminiModel(modelName);
+          console.log(`✅ Gemini (${modelName}) response generated successfully`);
+          return res.json({ response: text });
+        } catch (error) {
+          console.error(`Gemini ${modelName} error:`, error.message);
+          geminiError = error;
+          // Continue to next model or fallback
+        }
+      }
+    }
 
-    return res.json({ response: aiResponse, usedModel: result.model, source: result.source });
+    // If all Gemini models failed, fallback to Ollama codegemma
+    if (hasOllama) {
+      console.log('All Gemini models failed, falling back to Ollama codegemma...');
+      
+      try {
+        // Select the best available codegemma model
+        const selectedModel = await selectLocalModel(DEFAULT_LOCAL_PRIMARY);
+        console.log(`Using Ollama model: ${selectedModel}`);
+
+        // Prepare messages for Ollama
+        const messages = [
+          ...(conversationHistory || []),
+          { role: 'user', content: message }
+        ];
+>>>>>>> Stashed changes
+
+        // Use the existing callLocalOllama function
+        const result = await callLocalOllama(selectedModel, messages, {
+          num_predict: 500,
+          temperature: 0.7,
+        });
+
+        const responseText = result.message?.content || result.response?.message?.content || 'No response generated';
+        console.log(`✅ Ollama (${selectedModel}) response generated successfully`);
+        
+        // Check if response already sent before sending
+        if (!res.headersSent) {
+          return res.json({ response: responseText });
+        }
+      } catch (ollamaError) {
+        console.error('Ollama fallback also failed:', ollamaError.message);
+        
+        // Check if response already sent before sending error
+        if (!res.headersSent) {
+          return res.status(500).json({ 
+            error: 'Failed to generate chat response',
+            details: `Gemini error: ${geminiError?.message || 'Unknown'}. Ollama error: ${ollamaError.message}`,
+            suggestion: 'Check your GEMINI_API_KEY or ensure Ollama is running with codegemma model installed'
+          });
+        }
+      }
+    }
+
+    // Final fallback if everything fails
+    console.log('[Chat] All AI services failed, using fallback response');
+    return res.json({ response: getFallbackResponse(message) });
 
   } catch (error) {
-    console.error('[chat] Error:', error);
-
-    const fallback = error.message && error.message.includes('timed out')
-      ? 'I apologize, the request took too long. Please try again or break your request into smaller parts.'
-      : 'I encountered an error while processing your request. Please try again.';
-
-    return res.status(500).json({
-      error: 'Failed to generate chat response',
-      response: fallback,
-      details: error.message
-    });
+    // Final catch-all error handler
+    console.error('Unexpected error in chat endpoint:', error);
+    if (!res.headersSent) {
+      return res.json({ response: getFallbackResponse(message) });
+    }
   }
 });
 
@@ -1148,10 +1290,21 @@ mindmap
  */
 router.get('/models', async (req, res) => {
   try {
+    if (!ollama) {
+      return res.json({
+        installed: [],
+        ollamaAvailable: false,
+        note: 'Ollama client not available',
+        defaultLocalPrimary: DEFAULT_LOCAL_PRIMARY,
+        defaultLocalFallback: DEFAULT_LOCAL_FALLBACK
+      });
+    }
+    
     const listed = (await ollama.list()).models || [];
     const names = listed.map(m => m.name || m);
     return res.json({
       installed: names,
+      ollamaAvailable: true,
       defaultLocalPrimary: DEFAULT_LOCAL_PRIMARY,
       defaultLocalFallback: DEFAULT_LOCAL_FALLBACK
     });
@@ -1160,6 +1313,7 @@ router.get('/models', async (req, res) => {
     // Return empty but still informative
     return res.status(200).json({
       installed: [],
+      ollamaAvailable: false,
       note: 'Could not fetch model list; is Ollama running?',
       defaultLocalPrimary: DEFAULT_LOCAL_PRIMARY,
       defaultLocalFallback: DEFAULT_LOCAL_FALLBACK
@@ -1177,6 +1331,43 @@ router.get('/health', (req, res) => {
     localHost: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
     groqConfigured: !!GROQ_API_KEY
   });
+});
+
+/**
+ * POST /api/ai/voice/transcribe
+ * Expects: { audio: base64 encoded audio or audio file }
+ * Returns: { transcript: string }
+ * 
+ * Optional endpoint for server-side speech-to-text processing.
+ * Note: This is a placeholder - actual implementation would require
+ * audio processing library like @google-cloud/speech or similar.
+ */
+router.post('/voice/transcribe', async (req, res) => {
+  try {
+    const { audio, language = 'en-US' } = req.body;
+    
+    if (!audio) {
+      return res.status(400).json({ error: 'No audio data provided' });
+    }
+
+    // Placeholder implementation
+    // In production, you would:
+    // 1. Decode base64 audio or process uploaded file
+    // 2. Send to speech-to-text service (Google Cloud Speech, AWS Transcribe, etc.)
+    // 3. Return transcript
+    
+    return res.status(501).json({
+      error: 'Voice transcription not yet implemented',
+      note: 'Use browser Web Speech API for client-side transcription',
+      suggestion: 'Consider using @google-cloud/speech or AWS Transcribe for server-side processing'
+    });
+  } catch (error) {
+    console.error('[voice/transcribe] Error:', error);
+    return res.status(500).json({
+      error: 'Failed to process voice transcription',
+      details: error.message
+    });
+  }
 });
 
 /* ---------------------------
