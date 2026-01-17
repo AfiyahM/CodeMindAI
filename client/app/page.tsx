@@ -56,7 +56,7 @@ export default function HomePage() {
       setIsLoading(true);
       setError('');
       console.log('[Repos] Fetching user repositories...');
-      
+
       const response = await fetch('https://api.github.com/user/repos?sort=updated&per_page=30', {
         headers: {
           'Authorization': `token ${token}`,
@@ -73,7 +73,7 @@ export default function HomePage() {
         }
         throw new Error('Failed to fetch repos');
       }
-      
+
       const data = await response.json();
       console.log(`[Repos] Successfully fetched ${data.length} repositories`);
       setRepos(data);
@@ -224,45 +224,68 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0d1117] to-[#161b22] p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-12">
+        {/* Header with Search (GitHub-style) */}
+        <div className="flex items-center justify-between mb-10 gap-6">
+          {/* Left: Logo */}
           <div className="flex items-center gap-3">
             <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg">
               <Brain className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold text-[#f0f6fc]">CodeMind.AI</h1>
-              <p className="text-[#7d8590] text-sm">Your Repositories</p>
+              <h1 className="text-2xl font-bold text-[#f0f6fc]">CodeMind.AI</h1>
+              <p className="text-xs text-[#7d8590]">Your Repositories</p>
             </div>
           </div>
+
+          {/* Center: Search */}
+          <div className="relative w-[360px]">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#7d8590]"
+            />
+            <input
+              type="text"
+              placeholder="Search repositories"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="
+        w-full
+        h-9
+        pl-9
+        pr-3
+        bg-[#0d1117]
+        border border-[#30363d]
+        rounded-md
+        text-sm
+        text-[#e6edf3]
+        placeholder-[#7d8590]
+        focus:outline-none
+        focus:border-[#2f81f7]
+        focus:ring-1
+        focus:ring-[#2f81f7]
+      "
+            />
+          </div>
+
+          {/* Right: Sign Out */}
           <button
             onClick={handleLogout}
-            className="px-4 py-2 bg-red-600/20 hover:bg-red-600/30 border border-red-600/50 text-red-300 rounded-lg transition-all text-sm font-medium"
+            className="
+      h-9
+      px-4
+      bg-[#21262d]
+      hover:bg-[#30363d]
+      border border-[#30363d]
+      text-[#e6edf3]
+      rounded-md
+      text-sm
+      font-medium
+      transition-colors
+    "
           >
             Sign Out
           </button>
         </div>
 
-        {/* Error Message */}
-        {error && (
-          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 rounded-lg text-red-300 text-sm">
-            {error}
-          </div>
-        )}
-
-        {/* Search Bar */}
-        <div className="mb-8">
-          <div className="relative">
-            <Search className="absolute left-3 top-3 w-5 h-5 text-[#7d8590]" />
-            <input
-              type="text"
-              placeholder="Search repositories..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 bg-[#21262d] border border-[#30363d] rounded-lg text-[#e6edf3] placeholder-[#7d8590] focus:border-[#2f81f7] focus:outline-none focus:ring-2 focus:ring-[#2f81f7]/20 transition-all"
-            />
-          </div>
-        </div>
 
         {/* Loading State */}
         {isLoading ? (

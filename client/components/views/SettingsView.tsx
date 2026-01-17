@@ -1,13 +1,27 @@
 'use client';
 
-import { Palette, Volume2, Bell, Eye } from 'lucide-react';
+import { Palette, Volume2, Bell, Eye, Mic } from 'lucide-react';
 import { useState } from 'react';
+import useTextToSpeech from '../../hooks/useTextToSpeech';
+import { useVoiceSettings } from '../../lib/voiceSettings';
 
 export default function SettingsView() {
   const [theme, setTheme] = useState('dark');
   const [fontSize, setFontSize] = useState(12);
   const [notifications, setNotifications] = useState(true);
   const [minimap, setMinimap] = useState(true);
+
+  const { settings: voiceSettings, updateSettings } = useVoiceSettings();
+  const { availableVoices, selectedVoice, setSelectedVoice } = useTextToSpeech();
+
+  // Update context when voice changes
+  const handleVoiceChange = (voiceName: string) => {
+    const voice = availableVoices.find(v => v.name === voiceName);
+    if (voice) {
+      setSelectedVoice(voice);
+      updateSettings({ voiceName: voice.name });
+    }
+  };
 
   return (
     <div className="h-full flex flex-col bg-[#252526] overflow-hidden">
@@ -241,6 +255,104 @@ export default function SettingsView() {
               <span className="setting-description">Play UI sounds</span>
             </div>
             <button className="toggle-switch active" />
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <div className="section-title">
+            <Mic size={14} />
+            Voice Assistant
+          </div>
+          
+          <div className="setting-item">
+            <div className="setting-label">
+              <span>Auto-Speak Responses</span>
+              <span className="setting-description">Automatically read AI responses aloud</span>
+            </div>
+            <button
+              onClick={() => updateSettings({ autoSpeak: !voiceSettings.autoSpeak })}
+              className={`toggle-switch ${voiceSettings.autoSpeak ? 'active' : ''}`}
+            />
+          </div>
+
+          {availableVoices.length > 0 && (
+            <div className="setting-item">
+              <div className="setting-label">
+                <span>Voice</span>
+                <span className="setting-description">Select voice for text-to-speech</span>
+              </div>
+              <select
+                value={voiceSettings.voiceName || selectedVoice?.name || ''}
+                onChange={(e) => handleVoiceChange(e.target.value)}
+                className="select-control"
+                style={{ minWidth: '200px' }}
+              >
+                {availableVoices
+                  .filter(v => v.lang.startsWith('en'))
+                  .map((voice) => (
+                    <option key={voice.name} value={voice.name}>
+                      {voice.name} ({voice.lang})
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
+
+          <div className="setting-item">
+            <div className="setting-label">
+              <span>Speech Rate</span>
+              <span className="setting-description">Speed of speech (0.5x - 2.0x)</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="range"
+                min="0.5"
+                max="2.0"
+                step="0.1"
+                value={voiceSettings.rate}
+                onChange={(e) => updateSettings({ rate: parseFloat(e.target.value) })}
+                className="slider"
+              />
+              <span className="slider-value">{voiceSettings.rate.toFixed(1)}x</span>
+            </div>
+          </div>
+
+          <div className="setting-item">
+            <div className="setting-label">
+              <span>Speech Pitch</span>
+              <span className="setting-description">Voice pitch (0.5 - 2.0)</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="range"
+                min="0.5"
+                max="2.0"
+                step="0.1"
+                value={voiceSettings.pitch}
+                onChange={(e) => updateSettings({ pitch: parseFloat(e.target.value) })}
+                className="slider"
+              />
+              <span className="slider-value">{voiceSettings.pitch.toFixed(1)}</span>
+            </div>
+          </div>
+
+          <div className="setting-item">
+            <div className="setting-label">
+              <span>Speech Volume</span>
+              <span className="setting-description">Voice volume (0.0 - 1.0)</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                type="range"
+                min="0.0"
+                max="1.0"
+                step="0.1"
+                value={voiceSettings.volume}
+                onChange={(e) => updateSettings({ volume: parseFloat(e.target.value) })}
+                className="slider"
+              />
+              <span className="slider-value">{(voiceSettings.volume * 100).toFixed(0)}%</span>
+            </div>
           </div>
         </div>
 

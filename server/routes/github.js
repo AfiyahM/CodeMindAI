@@ -8,7 +8,7 @@ const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
 
 // Prefer the explicit env callback; default to /api/github/callback
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3001';
 const FALLBACK_CALLBACK = 'http://localhost:4000/api/github/callback';
 const GITHUB_CALLBACK_URL =
   process.env.GITHUB_CALLBACK_URL && process.env.GITHUB_CALLBACK_URL.trim().length > 0
