@@ -502,6 +502,8 @@ export default function RepoPage() {
             <MindMapView
               selectedFileContent={selectedFile ? fileContent : null}
               triggerGeneration={visualizationTrigger}
+              fileName={selectedFile?.name || null}
+              language={selectedFile ? getLanguage(selectedFile.name) : null}
             />
           </div>
 
@@ -510,3 +512,6 @@ export default function RepoPage() {
     </IDELayout>
   );
 }
+
+
+

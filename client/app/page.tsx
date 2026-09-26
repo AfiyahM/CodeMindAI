@@ -33,13 +33,7 @@ export default function HomePage() {
 
   // Check for existing token and handle OAuth callback
   useEffect(() => {
-    const token = localStorage.getItem('github_token');
-    if (token) {
-      setIsAuthenticated(true);
-      fetchUserRepos(token);
-    }
-
-    // Check for auth-success callback from backend with token
+    // First, check for auth-success callback from backend with token
     const params = new URLSearchParams(window.location.search);
     const callbackToken = params.get('token');
     if (callbackToken) {
@@ -48,8 +42,20 @@ export default function HomePage() {
       setIsAuthenticated(true);
       window.history.replaceState({}, document.title, '/');
       fetchUserRepos(callbackToken);
+      return;
     }
-  }, []);
+
+    // Check for existing token
+    const token = localStorage.getItem('github_token');
+    if (token) {
+      setIsAuthenticated(true);
+      fetchUserRepos(token);
+    } else if (!isSigningIn) {
+      // Only redirect if we're not in the middle of signing in
+      // and there's no token in the URL
+      router.push('/login');
+    }
+  }, [router]);
 
   const fetchUserRepos = async (token: string) => {
     try {
@@ -135,86 +141,30 @@ export default function HomePage() {
     (repo.description && repo.description.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  // Not authenticated - show login screen
+  // Not authenticated - show loading (will redirect via useEffect above)
   if (!isAuthenticated) {
+    // Don't redirect immediately - let useEffect handle it to check for callback token first
+    const params = new URLSearchParams(window.location.search);
+    const callbackToken = params.get('token');
+    
+    // If we're waiting for a callback, show loading
+    if (callbackToken || isSigningIn) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-[#0d1117] via-[#1a1a2e] to-[#16213e] flex flex-col items-center justify-center p-4 relative overflow-hidden">
-        {/* Animated background orbs */}
-        <div className="absolute top-0 left-0 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse" style={{ animation: 'pulse 8s ease-in-out infinite' }} />
-        <div className="absolute bottom-0 right-0 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl animate-pulse" style={{ animation: 'pulse 8s ease-in-out 2s infinite' }} />
-
-        <div className="relative z-10 max-w-md w-full">
-          {/* Logo Section */}
-          <div className="text-center mb-8">
-            <div className="flex items-center justify-center gap-3 mb-4">
-              <div className="p-3 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg">
-                <Brain className="w-8 h-8 text-white" />
-              </div>
-              <h1 className="text-4xl font-bold text-[#f0f6fc]">CodeMind.AI</h1>
-            </div>
-            <p className="text-[#7d8590] text-sm leading-relaxed">
-              A VS Code-like IDE with integrated AI assistance for code analysis, debugging, and development.
-            </p>
+        <div className="min-h-screen bg-gradient-to-br from-[#0d1117] via-[#1a1a2e] to-[#16213e] flex items-center justify-center">
+          <div className="text-center">
+            <Loader className="w-12 h-12 text-[#2f81f7] animate-spin mx-auto mb-4" />
+            <p className="text-[#7d8590]">Authenticating...</p>
           </div>
-
-          {/* Error Message */}
-          {error && (
-            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 rounded-lg text-red-300 text-sm">
-              {error}
             </div>
-          )}
-
-          {/* Sign In Button */}
-          <button
-            onClick={handleGitHubLogin}
-            disabled={isSigningIn}
-            className="w-full bg-gradient-to-r from-[#2f81f7] to-[#1f6feb] hover:from-[#1f6feb] hover:to-[#0d47a1] disabled:from-gray-600 disabled:to-gray-500 text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all duration-300 transform hover:scale-105 active:scale-95 shadow-lg"
-          >
-            {isSigningIn ? (
-              <>
-                <Loader className="w-5 h-5 animate-spin" />
-                Signing in...
-              </>
-            ) : (
-              <>
-                <Github size={20} />
-                Sign in with GitHub
-              </>
-            )}
-          </button>
-
-          {/* Features Grid */}
-          <div className="mt-12 space-y-3">
-            <div className="flex items-start gap-4 p-4 rounded-lg bg-[#161b22]/50 backdrop-blur-sm border border-[#30363d]/50 hover:border-[#2f81f7]/50 transition-all">
-              <div className="p-2 bg-blue-500/20 rounded-lg flex-shrink-0">
-                <Code className="w-5 h-5 text-[#2f81f7]" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-[#f0f6fc]">Browse & Edit</h3>
-                <p className="text-xs text-[#7d8590] mt-1">Explore repositories with intuitive file tree navigation</p>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-4 p-4 rounded-lg bg-[#161b22]/50 backdrop-blur-sm border border-[#30363d]/50 hover:border-purple-500/50 transition-all">
-              <div className="p-2 bg-purple-500/20 rounded-lg flex-shrink-0">
-                <Brain className="w-5 h-5 text-purple-400" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-[#f0f6fc]">AI Analysis</h3>
-                <p className="text-xs text-[#7d8590] mt-1">Real-time Ollama-powered code analysis and insights</p>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-4 p-4 rounded-lg bg-[#161b22]/50 backdrop-blur-sm border border-[#30363d]/50 hover:border-green-500/50 transition-all">
-              <div className="p-2 bg-green-500/20 rounded-lg flex-shrink-0">
-                <Zap className="w-5 h-5 text-green-400" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-[#f0f6fc]">Monaco Editor</h3>
-                <p className="text-xs text-[#7d8590] mt-1">Professional code editing with syntax highlighting</p>
-              </div>
-            </div>
-          </div>
+      );
+    }
+    
+    // Otherwise redirect to login (useEffect will handle this, but show loading meanwhile)
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-[#0d1117] via-[#1a1a2e] to-[#16213e] flex items-center justify-center">
+        <div className="text-center">
+          <Loader className="w-12 h-12 text-[#2f81f7] animate-spin mx-auto mb-4" />
+          <p className="text-[#7d8590]">Redirecting...</p>
         </div>
       </div>
     );

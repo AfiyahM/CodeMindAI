@@ -43,6 +43,177 @@ function getFallbackResponse() {
 }
 
 /**
+ * Advanced code structure analyzer
+ * Extracts functions, classes, imports, control structures, and dependencies
+ */
+function analyzeCodeStructure(codeContent, languageHint = '') {
+  const structure = {
+    language: languageHint || detectLanguage(codeContent),
+    functions: [],
+    classes: [],
+    imports: [],
+    exports: [],
+    variables: [],
+    controlStructures: {
+      ifStatements: 0,
+      loops: 0,
+      switches: 0,
+      tryCatch: 0
+    },
+    dependencies: [],
+    entryPoints: []
+  };
+
+  const lines = codeContent.split('\n');
+  let inFunction = false;
+  let inClass = false;
+  let braceCount = 0;
+  let currentFunction = null;
+  let currentClass = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const originalLine = lines[i];
+
+    // Detect imports
+    if (line.match(/^(import|from|require|#include|using)\s/)) {
+      structure.imports.push({ line: i + 1, content: line.substring(0, 100) });
+      
+      // Extract package names
+      const packageMatch = line.match(/(?:from|import|require\(|using\s+)(['"`])([^'"`]+)\1/);
+      if (packageMatch) {
+        structure.dependencies.push(packageMatch[2]);
+      }
+    }
+
+    // Detect exports
+    if (line.match(/^(export|module\.exports)/)) {
+      structure.exports.push({ line: i + 1, content: line.substring(0, 100) });
+    }
+
+    // Detect classes (multi-language support)
+    const classMatch = line.match(/^\s*(export\s+)?(class|interface|type)\s+(\w+)/);
+    if (classMatch) {
+      structure.classes.push({
+        name: classMatch[3],
+        line: i + 1,
+        type: classMatch[2]
+      });
+      inClass = true;
+      currentClass = classMatch[3];
+    }
+
+    // Detect functions/methods
+    const functionPatterns = [
+      /^\s*(export\s+)?(async\s+)?(function|const|let|var)\s+(\w+)\s*[=(]/,
+      /^\s*(export\s+)?(async\s+)?(\w+)\s*[:=]\s*(async\s+)?\(/,
+      /^\s*(public|private|protected)?\s*(static\s+)?(async\s+)?(\w+)\s*\(/,
+      /^\s*def\s+(\w+)\s*\(/
+    ];
+
+    for (const pattern of functionPatterns) {
+      const match = line.match(pattern);
+      if (match) {
+        const funcName = match[4] || match[5] || match[1];
+        if (funcName && !['if', 'for', 'while', 'switch', 'catch', 'then'].includes(funcName)) {
+          structure.functions.push({
+            name: funcName,
+            line: i + 1,
+            async: line.includes('async'),
+            class: currentClass || null
+          });
+          inFunction = true;
+          currentFunction = funcName;
+          break;
+        }
+      }
+    }
+
+    // Detect control structures
+    if (line.match(/^\s*if\s*\(|^\s*if\s+/)) structure.controlStructures.ifStatements++;
+    if (line.match(/^\s*(for|while|forEach|map)\s*\(|^\s*for\s+/)) structure.controlStructures.loops++;
+    if (line.match(/^\s*switch\s*\(/)) structure.controlStructures.switches++;
+    if (line.match(/^\s*try\s*\{|^\s*try:/)) structure.controlStructures.tryCatch++;
+
+    // Detect entry points (main, index, app, etc.)
+    if (line.match(/\b(main|index|app|entry|entryPoint|start|init)\s*\(/i)) {
+      structure.entryPoints.push({ line: i + 1, name: line.substring(0, 80) });
+    }
+
+    // Track brace/indentation to detect function/class boundaries
+    if (line.includes('{')) braceCount++;
+    if (line.includes('}')) {
+      braceCount--;
+      if (braceCount === 0) {
+        if (inFunction) {
+          inFunction = false;
+          currentFunction = null;
+        }
+        if (inClass && originalLine.includes('}')) {
+          inClass = false;
+          currentClass = null;
+        }
+      }
+    }
+  }
+
+  return structure;
+}
+
+/**
+ * Detect programming language from filename
+ */
+function detectLanguageFromFileName(fileName) {
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  const langMap = {
+    'js': 'javascript', 'jsx': 'javascript', 'mjs': 'javascript',
+    'ts': 'typescript', 'tsx': 'typescript',
+    'py': 'python', 'pyw': 'python',
+    'java': 'java',
+    'cpp': 'cpp', 'cc': 'cpp', 'cxx': 'cpp', 'h': 'cpp', 'hpp': 'cpp',
+    'cs': 'csharp',
+    'go': 'go',
+    'rs': 'rust',
+    'php': 'php',
+    'rb': 'ruby',
+    'swift': 'swift',
+    'kt': 'kotlin',
+    'scala': 'scala'
+  };
+  return langMap[ext] || '';
+}
+
+/**
+ * Detect programming language from code content
+ */
+function detectLanguage(codeContent) {
+  const patterns = {
+    javascript: [/\b(function|const|let|var|=>|require\(|import\s)/, /\.js$/],
+    typescript: [/:\s*\w+[<>]?[,;\)]/, /interface\s+\w+/, /type\s+\w+/, /\.tsx?$/],
+    python: [/def\s+\w+\s*\(/, /import\s+\w+/, /from\s+\w+\s+import/, /\.py$/],
+    java: [/public\s+class/, /private\s+\w+\s+\w+;/, /\.java$/],
+    cpp: [/#include\s*</, /using\s+namespace/, /\.cpp$|\.h$/],
+    csharp: [/using\s+System/, /namespace\s+\w+/, /\.cs$/],
+    go: [/func\s+\w+\s*\(/, /package\s+\w+/, /\.go$/],
+    rust: [/fn\s+\w+\s*\(/, /use\s+\w+/, /\.rs$/],
+    php: [/<\?php/, /function\s+\w+\s*\(/, /\.php$/],
+    ruby: [/def\s+\w+/, /class\s+\w+/, /\.rb$/]
+  };
+
+  const scores = {};
+  for (const [lang, patterns] of Object.entries(patterns)) {
+    scores[lang] = patterns.reduce((score, pattern) => {
+      return score + (pattern.test(codeContent) ? 1 : 0);
+    }, 0);
+  }
+
+  const maxScore = Math.max(...Object.values(scores));
+  if (maxScore === 0) return 'unknown';
+  
+  return Object.entries(scores).find(([_, score]) => score === maxScore)?.[0] || 'unknown';
+}
+
+/**
  * Utility: sleep for ms
  */
 function sleep(ms) {
@@ -118,10 +289,16 @@ async function callLocalOllama(model, messages = [], options = {}) {
       options
     });
 
+    // CodeGemma (ollama.generate) response format: response.response contains the generated text
+    const content = response.response || response.message?.content || response.text || '';
+    
+    console.log('[CODEGEMMA RESPONSE] Length:', content.length, 'chars');
+    
     return {
       message: {
-        content: response.message?.content || ''
-      }
+        content: content
+      },
+      response: content // Also include in response field for analyze-repo compatibility
     };
   }
 
@@ -413,56 +590,121 @@ router.post('/analyze-repo', async (req, res) => {
 
     const truncatedDir = JSON.stringify(dirStructure, null, 2).slice(0, 2000); // keep within prompt size
 
-    const analysisPrompt = `# Repository analysis request: ${owner}/${repo}
+    // Build file content summaries (include key files for CodeGemma analysis)
+    const keyFilesContent = files
+      .filter(f => f.content && (
+        f.path.endsWith('package.json') ||
+        f.path.endsWith('README.md') ||
+        f.path.endsWith('index.js') ||
+        f.path.endsWith('app.js') ||
+        f.path.endsWith('server.js') ||
+        entryPoints.some(ep => ep.path === f.path)
+      ))
+      .slice(0, 5)
+      .map(f => `File: ${f.path}\n${f.content.substring(0, 500)}...`)
+      .join('\n\n---\n\n');
 
-Total files: ${files.length}
-Total size: ${totalSizeKb} KB
-File types: ${typesSummary}
-Top-level directories: ${[...new Set(files.map(f => f.path.split('/')[0]))].slice(0,10).join(', ')}
+    // Create optimized prompt for CodeGemma (instruction-style) and other models (chat-style)
+    const analysisPromptForCodeGemma = `Analyze the repository "${owner}/${repo}" and provide a comprehensive overview.
 
-Directory structure snapshot:
-\`\`\`json
+REPOSITORY OVERVIEW:
+- Repository: ${owner}/${repo}
+- Total files: ${files.length}
+- Total size: ${totalSizeKb} KB
+- File types: ${typesSummary}
+- Top-level directories: ${[...new Set(files.map(f => f.path.split('/')[0]))].slice(0,10).join(', ')}
+
+DIRECTORY STRUCTURE:
 ${truncatedDir}
-\`\`\`
 
-Dependencies (${allDependencies.length}):
-${allDependencies.length > 0 ? allDependencies.map(d => `- ${d.name} ${d.version}`).join('\n') : 'No package files parsed.'}
+DEPENDENCIES (${allDependencies.length}):
+${allDependencies.length > 0 ? allDependencies.slice(0, 20).map(d => `- ${d.name} ${d.version}`).join('\n') : 'No dependencies found.'}
 
-Entry points:
+ENTRY POINTS:
 ${entryPoints.length > 0 ? entryPoints.map(e => `- ${e.path}`).join('\n') : 'None found'}
 
-Tests: ${testFiles.length}
-Config files: ${configFiles.length}
-Docs: ${docFiles.length}
+CODE STATISTICS:
+- Test files: ${testFiles.length}
+- Config files: ${configFiles.length}
+- Documentation files: ${docFiles.length}
 
-Please provide:
-1) High-level summary of project purpose.
-2) Architecture and main components.
-3) Dependency risks and outdated packages.
-4) Quick list of highest priority improvements (security, tests, CI).
-5) Example small tasks for a new contributor (3 tasks).
-6) Actionable next steps for production readiness.
+KEY FILES CONTENT:
+${keyFilesContent || 'No key files available.'}
 
-Be concise but thorough. Use numbered lists and code examples when required.
-`;
+TASK: Provide a detailed repository analysis with the following sections:
 
+1. PROJECT OVERVIEW
+   - What is this project? Describe its main purpose and functionality.
+   - What technologies and frameworks are used?
+   - What is the project structure?
+
+2. ARCHITECTURE & COMPONENTS
+   - Main components and modules
+   - How is the codebase organized?
+   - Key files and their purposes
+   - Entry points and how the application starts
+
+3. DEPENDENCIES & TECHNOLOGIES
+   - Main dependencies and their purposes
+   - Technology stack overview
+   - Notable libraries or frameworks
+
+4. CODE QUALITY & STRUCTURE
+   - Overall code organization
+   - Testing coverage (${testFiles.length} test files)
+   - Configuration and setup requirements
+
+5. GETTING STARTED
+   - How to set up and run this project
+   - Key configuration needed
+   - Entry points for new developers
+
+6. IMPROVEMENTS & RECOMMENDATIONS
+   - Security considerations
+   - Testing improvements
+   - Code organization suggestions
+   - Production readiness
+
+Provide clear, structured output with numbered lists. Be thorough but concise.`;
+
+    // Build messages - callLocalOllama will handle CodeGemma's instruction format conversion
+    const systemPrompt = 'You are an expert software architect analyzing code repositories. Provide clear, structured analysis with actionable insights. Focus on giving a comprehensive overview of the repository structure, purpose, architecture, and key components.';
+    
     const messages = [
-      { role: 'system', content: 'You are an expert software architect analyzing code repositories. Provide clear, actionable recommendations.' },
-      { role: 'user', content: analysisPrompt }
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: analysisPromptForCodeGemma }
     ];
 
-    // This can be heavy -> allow longer timeout and more tokens
-    const result = await generateWithFallback(messages, { timeoutMs: 220000, num_predict: 1500, temperature: 0.2, max_tokens: 2000 });
+    console.log(`[analyze-repo] Prepared prompt with ${keyFilesContent ? 'key files' : 'structure only'}`);
 
-    // Get text
+    // This can be heavy -> allow longer timeout and more tokens
+    const result = await generateWithFallback(messages, { timeoutMs: 220000, num_predict: 1500, temperature: 0.3, max_tokens: 2000 });
+
+    // Get text - properly handle CodeGemma response format
     let rawContent = '';
-  if (result.source === 'local') {
-  rawContent =
-    result.response.response ||               // CodeGemma output
-    result.response.message?.content ||       // Qwen output
-    result.response.output?.[0]?.content?.[0]?.text ||
-    '';
-}
+    if (result.source === 'local') {
+      // CodeGemma uses ollama.generate() which we now return as response.response
+      // Qwen uses ollama.chat() which returns response.message.content
+      // Priority: response.response (CodeGemma) > message.content (Qwen) > other formats
+      rawContent = result.response.response ||               // CodeGemma output (set by callLocalOllama)
+                   result.response.message?.content ||       // Qwen output
+                   result.response.output?.[0]?.content?.[0]?.text ||
+                   (result.response.text || '');
+      
+      // If still empty, try to extract from the full response
+      if (!rawContent && typeof result.response === 'string') {
+        rawContent = result.response;
+      }
+    } else if (result.source === 'groq') {
+      rawContent = result.response.message?.content || 
+                   result.response.raw?.choices?.[0]?.message?.content || 
+                   result.response.raw?.choices?.[0]?.text || 
+                   '';
+    } else {
+      rawContent = JSON.stringify(result.response);
+    }
+
+    console.log(`[analyze-repo] Raw content length: ${rawContent.length}, source: ${result.source}, model: ${result.model}`);
 
 
     // We want the AI to respond normally (analysis, not code-only)
@@ -612,7 +854,7 @@ router.post('/chat', async (req, res) => {
  * Generates a Mermaid diagram (flowchart or mindmap) from code content using AI.
  */
 router.post('/generate-diagram', async (req, res) => {
-  const { codeContent, diagramType } = req.body;
+  const { codeContent, diagramType, fileName, language } = req.body;
 
   if (!codeContent || typeof codeContent !== 'string') {
     return res.status(400).json({ 
@@ -632,74 +874,170 @@ router.post('/generate-diagram', async (req, res) => {
     console.log(`[generate-diagram] Generating ${diagramType} for code (${codeContent.length} chars)`);
     console.log(`[generate-diagram] Code preview: ${codeContent.substring(0, 100)}...`);
 
-    // Build prompt based on diagram type
+    // Analyze code structure for advanced diagram generation
+    // Use provided language hint or detect from code
+    const languageHint = language || (fileName ? detectLanguageFromFileName(fileName) : '');
+    const codeStructure = analyzeCodeStructure(codeContent, languageHint);
+    console.log(`[generate-diagram] Detected language: ${codeStructure.language}`);
+    console.log(`[generate-diagram] File: ${fileName || 'unknown'}`);
+    console.log(`[generate-diagram] Found ${codeStructure.functions.length} functions, ${codeStructure.classes.length} classes`);
+
+    // Build comprehensive prompt based on diagram type
     let prompt = '';
     if (diagramType === 'flowchart') {
-      prompt = `Analyze the following code and generate a Mermaid flowchart diagram that visualizes the code structure, control flow, and logic.
+      const structureInfo = `
+Code Structure Analysis:
+- Language: ${codeStructure.language}
+- Functions: ${codeStructure.functions.map(f => `${f.name}${f.async ? ' (async)' : ''}`).join(', ') || 'None'}
+- Classes: ${codeStructure.classes.map(c => c.name).join(', ') || 'None'}
+- Control Structures: ${codeStructure.controlStructures.ifStatements} if statements, ${codeStructure.controlStructures.loops} loops, ${codeStructure.controlStructures.switches} switches, ${codeStructure.controlStructures.tryCatch} try-catch blocks
+- Dependencies: ${codeStructure.dependencies.slice(0, 10).join(', ') || 'None'}
+${codeStructure.entryPoints.length > 0 ? `- Entry Points: ${codeStructure.entryPoints.map(e => `Line ${e.line}`).join(', ')}` : ''}
 
 Code:
 \`\`\`
 ${codeContent}
-\`\`\`
+\`\`\``;
 
-Requirements:
-- Generate ONLY valid Mermaid flowchart syntax
-- Start with "graph TD" (top-down) or "graph LR" (left-right) as appropriate
-- Use clear, descriptive node labels
-- Show function calls, conditionals, loops, and data flow
-- Use proper Mermaid syntax: --> for arrows, [] for rectangles, {} for diamonds (decisions), () for rounded nodes
-- Do NOT include markdown code fences (\`\`\`)
-- Return ONLY the Mermaid code, nothing else
+      prompt = `You are an expert code analyzer. Analyze the following code and generate a DETAILED Mermaid flowchart diagram that accurately represents the actual execution flow, control structures, function calls, and data flow.
 
-Example format:
+${structureInfo}
+
+CRITICAL REQUIREMENTS:
+1. Generate ONLY valid Mermaid flowchart syntax
+2. Start with "graph TD" (top-down) for most code, or "graph LR" if horizontal flow is better
+3. Use the ACTUAL function names, class names, and control structures from the code
+4. Show EVERY significant control flow path including:
+   - All if/else branches with descriptive conditions
+   - All loops (for, while, forEach, etc.) with loop conditions
+   - All function calls and their return paths
+   - All try-catch blocks and error handling paths
+   - All switch cases
+5. Node types:
+   - [Rectangle] for process/function calls: e.g., "ProcessData()" or "validateInput()"
+   - {Diamond} for decisions/conditions: e.g., "Is Valid?" or "Count > 0?"
+   - (Round edges) for start/end: e.g., "Start" or "End"
+   - [[Parallelogram]] for input/output: e.g., "Read Input" or "Return Result"
+6. Label edges clearly:
+   - Use "|Yes|" or "|No|" for decision branches
+   - Use "|Error|" or "|Success|" for exception paths
+   - Use descriptive labels for function returns
+7. Show the ACTUAL FLOW based on the code structure above - don't create generic flows
+8. Include line numbers or function names in nodes when helpful
+9. Group related operations visually
+10. Do NOT include markdown code fences (\`\`\`)
+11. Return ONLY the Mermaid code, nothing else
+
+Example of detailed flowchart:
 graph TD
-    A[Start] --> B{Check Condition}
-    B -->|Yes| C[Process]
-    B -->|No| D[Skip]
-    C --> E[End]`;
+    Start([Entry Point]) --> Init[Initialize Variables]
+    Init --> Validate{Validate Input?}
+    Validate -->|Valid| Process[Process Data]
+    Validate -->|Invalid| Error[Return Error]
+    Process --> Loop{Items Remaining?}
+    Loop -->|Yes| Item[Process Item] --> Update[Update Counter]
+    Update --> Loop
+    Loop -->|No| Result[Return Result]
+    Error --> End([End])
+    Result --> End`;
     } else {
       // mindmap
-      prompt = `Analyze the following code and generate a Mermaid mindmap that visualizes the code structure, components, and relationships.
+      const structureInfo = `
+Code Structure Analysis:
+- Language: ${codeStructure.language}
+- Functions (${codeStructure.functions.length}): ${codeStructure.functions.slice(0, 15).map(f => `${f.name}${f.class ? ` (${f.class})` : ''}${f.async ? ' [async]' : ''}`).join(', ')}
+- Classes/Interfaces (${codeStructure.classes.length}): ${codeStructure.classes.map(c => `${c.name} [${c.type}]`).join(', ')}
+- Imports/Dependencies: ${codeStructure.dependencies.slice(0, 15).join(', ')}
+- Exports: ${codeStructure.exports.length > 0 ? structure.exports.slice(0, 5).map(e => `Line ${e.line}`).join(', ') : 'None'}
 
 Code:
 \`\`\`
 ${codeContent}
-\`\`\`
+\`\`\``;
 
-Requirements:
-- Generate ONLY valid Mermaid mindmap syntax
-- Start with "mindmap"
-- Organize the code structure hierarchically
-- Show main components, functions, classes, and their relationships
-- Use clear, concise labels
-- Do NOT include markdown code fences (\`\`\`)
-- Return ONLY the Mermaid code, nothing else
+      prompt = `You are an expert code analyzer. Analyze the following code and generate a COMPREHENSIVE Mermaid mindmap that shows the complete code architecture, relationships, and structure.
 
-Example format:
+${structureInfo}
+
+CRITICAL REQUIREMENTS:
+1. Generate ONLY valid Mermaid mindmap syntax
+2. Start with "mindmap" and create a hierarchical structure
+3. Organize by ACTUAL code structure:
+   - Root should be the main module/class/file name or "Code Structure"
+   - First level: Major components (Classes, Functions, Imports, Exports, etc.)
+   - Second level: Actual names from the code
+   - Third level: Details (parameters, return types, dependencies, etc.)
+4. Include ALL major components:
+   - Classes and their methods
+   - Functions and their signatures (if space allows)
+   - Imports and dependencies with their purposes
+   - Data structures and types
+   - Entry points and main functions
+   - Configuration and constants
+5. Show relationships:
+   - Which functions belong to which class
+   - Which imports are used by which functions
+   - Dependencies between components
+6. Use actual names from the code - don't use generic placeholders
+7. Keep labels concise but descriptive (max 40 chars per node)
+8. Organize logically (group related items together)
+9. Highlight important components (main functions, entry points, core classes)
+10. Do NOT include markdown code fences (\`\`\`)
+11. Return ONLY the Mermaid code, nothing else
+
+Example of detailed mindmap:
 mindmap
-  root((Main Component))
-    Function A
-    Function B
-      Sub-function B1
-      Sub-function B2
-    Data Structures
-      Array
-      Object`;
+  root((Main Module))
+    Classes
+      UserService
+        Methods
+          createUser()
+          updateUser()
+          deleteUser()
+        Dependencies
+          Database
+          Validator
+    Functions
+      Main Entry
+        Parameters
+        Returns
+      Helper Functions
+        formatDate()
+        validateEmail()
+    Imports
+      Express
+      MongoDB
+      Validator
+    Exports
+      UserService
+      main()`;
     }
 
-    const systemPrompt = 'You are an expert at generating Mermaid diagrams from code. Always return valid Mermaid syntax only, without any markdown formatting or explanations.';
+    const systemPrompt = `You are an expert software engineer and code visualization specialist. Your task is to analyze code and generate highly detailed, accurate Mermaid diagrams that reflect the actual code structure and logic.
+
+Key guidelines:
+- Always use ACTUAL names from the code (function names, class names, variable names)
+- Show COMPLETE control flow paths, not simplified versions
+- Include ALL significant branches, loops, and exception handlers
+- Be precise with Mermaid syntax - use correct node types and edge labels
+- Organize diagrams logically to show code relationships and flow
+- Never use generic placeholders - use real identifiers from the code
+- Return ONLY valid Mermaid syntax - no explanations, no markdown fences, no extra text`;
 
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: prompt }
     ];
 
-    // Use longer timeout for diagram generation as it can be complex
+    // Use longer timeout and more tokens for complex diagram generation
     console.log(`[generate-diagram] Calling AI with ${messages.length} messages`);
+    console.log(`[generate-diagram] Code structure: ${codeStructure.functions.length} functions, ${codeStructure.classes.length} classes`);
+    
     const result = await generateWithFallback(messages, { 
-      timeoutMs: 60000, 
-      num_predict: 800, 
-      temperature: 0.3 
+      timeoutMs: 90000, // Longer timeout for complex analysis
+      num_predict: 1500, // More tokens for detailed diagrams
+      temperature: 0.2, // Lower temperature for more consistent output
+      max_tokens: 2000 
     });
     console.log(`[generate-diagram] AI response received. Source: ${result.source}, Model: ${result.model}`);
 

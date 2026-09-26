@@ -10,9 +10,12 @@ interface MindMapViewProps {
   selectedFileContent: string | null;
   // Optional: Trigger generation externally
   triggerGeneration?: { type: 'flowchart' | 'mindmap' | null; timestamp?: number };
+  // Optional: File metadata for better analysis
+  fileName?: string | null;
+  language?: string | null;
 }
 
-export default function MindMapView({ selectedFileContent, triggerGeneration }: MindMapViewProps) {
+export default function MindMapView({ selectedFileContent, triggerGeneration, fileName, language }: MindMapViewProps) {
   const [mermaidCode, setMermaidCode] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +45,8 @@ export default function MindMapView({ selectedFileContent, triggerGeneration }: 
         body: JSON.stringify({
           codeContent: selectedFileContent,
           diagramType: type,
+          fileName: fileName || null,
+          language: language || null,
         }),
       });
 
